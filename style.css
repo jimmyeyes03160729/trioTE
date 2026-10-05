@@ -43,16 +43,26 @@ h2{margin:0 0 6px;font-size:18px}
 .limit-label{font-weight:600}
 .limit-label input{width:90px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;margin:0 4px}
 
-/* report form */
-.form-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px;margin-bottom:12px}
-.form-grid label{display:flex;flex-direction:column;gap:4px;font-weight:600;font-size:13px}
-.form-grid input,.form-grid textarea,textarea{padding:7px 9px;border:1px solid var(--line);border-radius:6px;font-family:inherit;font-size:13px}
-.company-list{display:flex;flex-wrap:wrap;gap:6px;margin-top:2px}
-.company-list label{flex-direction:row;align-items:center;font-weight:400;border:1px solid var(--line);border-radius:6px;padding:5px 10px;cursor:pointer;background:#fff}
-.company-list label.on{border-color:var(--accent);background:#eff6ff;color:var(--accent)}
 .radio-group{display:flex;gap:14px;font-weight:400}
 .big-field{display:flex;flex-direction:column;gap:4px;font-weight:600;font-size:13px;margin-bottom:12px}
 .big-field textarea{width:100%;min-height:120px;resize:vertical}
+
+/* 出差報告卡片 */
+.card{background:#fff;border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px;margin-bottom:16px}
+.card-title{font-size:14px;font-weight:700;color:var(--accent);margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid #eef0f3}
+.report-row{display:flex;gap:12px;margin-bottom:12px;flex-wrap:wrap}
+.report-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}
+.report-field{display:flex;flex-direction:column;gap:5px}
+.report-field.full{grid-column:1 / -1}
+.field-label{font-size:12px;font-weight:600;color:var(--muted)}
+.report-field input,.report-field textarea,.big-field textarea{padding:8px 10px;border:1px solid var(--line);border-radius:7px;font-family:inherit;font-size:13px;background:#fbfcfe}
+.report-field input:focus,.big-field textarea:focus{border-color:var(--accent);outline:none;background:#fff}
+.report-field input[readonly]{background:#f0f2f5;color:var(--muted)}
+.company-list{display:flex;flex-wrap:wrap;gap:8px}
+.company-list label{display:inline-flex;align-items:center;gap:6px;font-weight:400;font-size:13px;border:1px solid var(--line);border-radius:8px;padding:7px 12px;cursor:pointer;background:#fff;transition:.12s}
+.company-list label:hover{border-color:#c9ced6}
+.company-list label.on{border-color:var(--accent);background:#eff6ff;color:var(--accent);font-weight:600}
+.company-list input{margin:0}
 
 /* dropzone */
 .dropzone{border:2px dashed #c7cdd6;border-radius:var(--radius);padding:40px;text-align:center;color:var(--muted);cursor:pointer;background:#fff;transition:.15s}

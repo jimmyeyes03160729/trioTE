@@ -44,27 +44,43 @@
   <!-- ============ 出差報告 ============ -->
   <section id="tab-report" class="panel">
     <h2>出差報告</h2>
-    <div class="form-grid">
-      <label>所屬公司（擇一）
-        <div class="company-list" id="company-list"></div>
-      </label>
-      <label>出差別
-        <div class="radio-group">
-          <label><input type="radio" name="trip-type" value="國外" checked> 國外</label>
-          <label><input type="radio" name="trip-type" value="國內"> 國內</label>
+
+    <div class="card">
+      <div class="card-title">基本資訊</div>
+      <div class="report-row">
+        <div class="report-field full">
+          <span class="field-label">所屬公司（擇一）</span>
+          <div class="company-list" id="company-list"></div>
         </div>
-      </label>
-      <label>填寫日期 <input type="date" id="f-fill-date"></label>
-      <label>出差人員 <input type="text" id="f-person"></label>
-      <label>部門名稱 <input type="text" id="f-dept"></label>
-      <label>出差地區 <input type="text" id="f-region" placeholder="例如：蘇州、長沙、東莞"></label>
-      <label>開始日期 <input type="date" id="f-start"></label>
-      <label>結束日期 <input type="date" id="f-end"></label>
-      <label>合計天數 <input type="text" id="f-days" readonly></label>
+      </div>
+      <div class="report-grid">
+        <div class="report-field">
+          <span class="field-label">出差別</span>
+          <div class="radio-group">
+            <label><input type="radio" name="trip-type" value="國外" checked> 國外</label>
+            <label><input type="radio" name="trip-type" value="國內"> 國內</label>
+          </div>
+        </div>
+        <div class="report-field"><span class="field-label">填寫日期</span><input type="date" id="f-fill-date"></div>
+        <div class="report-field"><span class="field-label">出差人員</span><input type="text" id="f-person"></div>
+        <div class="report-field"><span class="field-label">部門名稱</span><input type="text" id="f-dept"></div>
+        <div class="report-field full"><span class="field-label">出差地區</span><input type="text" id="f-region" placeholder="例如：蘇州、長沙、東莞"></div>
+        <div class="report-field"><span class="field-label">開始日期</span><input type="date" id="f-start"></div>
+        <div class="report-field"><span class="field-label">結束日期</span><input type="date" id="f-end"></div>
+        <div class="report-field"><span class="field-label">合計天數</span><input type="text" id="f-days" readonly></div>
+      </div>
     </div>
-    <label class="big-field">出差執行重點：<textarea id="f-focus" rows="8"></textarea></label>
-    <label class="big-field">問題整理及建議事項：<textarea id="f-issue" rows="8"></textarea></label>
-    <label class="big-field">補充說明：<textarea id="f-note" rows="6"></textarea></label>
+
+    <div class="card">
+      <div class="card-title">出差報告內容</div>
+      <label class="big-field">出差執行重點：<textarea id="f-focus" rows="8"></textarea></label>
+      <label class="big-field">問題整理及建議事項：<textarea id="f-issue" rows="8"></textarea></label>
+    </div>
+
+    <div class="card">
+      <div class="card-title">補充說明</div>
+      <label class="big-field"><textarea id="f-note" rows="5" placeholder="例如：差旅費報銷請款合計…"></textarea></label>
+    </div>
   </section>
 
   <!-- ============ 上傳發票 ============ -->

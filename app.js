@@ -704,9 +704,11 @@ async function runOCR() {
   const status = $('#crop-status');
   if (btn) { btn.disabled = true; btn.textContent = '辨識中…'; }
   try {
+    if (status) status.textContent = '下載辨識引擎中（首次較久，請稍候）…';
     await loadTesseract();
     for (let i = 0; i < cropPending.length; i++) {
       const p = cropPending[i];
+      if (status) status.textContent = `辨識中… (${i + 1}/${cropPending.length})`;
       const result = await Tesseract.recognize(p.dataURL, 'chi_tra+chi_sim+eng', {});
       const text = result.data.text;
       const parsed = parseReceipt(text);
@@ -714,17 +716,16 @@ async function runOCR() {
       if (parsed.currency) p.currency = parsed.currency;
       if (parsed.date) p.date = parsed.date;
       if (parsed.category) p.category = parsed.category;
-      if (status) status.textContent = `辨識中… (${i + 1}/${cropPending.length})`;
     }
     renderCropPreviews();
-    if (status) status.textContent = '辨識完成，請確認並修改金額/幣別/日期';
     setCropGuide('辨識完成。請確認下方各張的金額、幣別、日期是否正確（可直接修改），再按「完成」。');
+    if (status) status.textContent = '辨識完成';
   } catch (err) {
-    setCropGuide('自動辨識失敗，請手動填寫金額/幣別/日期。');
+    setCropGuide('自動辨識失敗（可能網路無法載入辨識引擎），請手動填寫金額/幣別/日期。');
+    if (status) status.textContent = '辨識失敗';
     console.warn(err);
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = '重新辨識金額/幣別/日期'; }
-    if (status) status.textContent = '';
   }
 }
 
@@ -775,6 +776,17 @@ function parseReceipt(text) {
       if (v > 0) { out.amount = v; break; }
     }
   }
+  // 後備：取文字中「看似金額」的最大數字（排除 4 位數年份、日期）
+  if (!out.amount) {
+    const nums = [];
+    const re = /[0-9][0-9,]*(?:\.\d{1,2})?/g;
+    let mm;
+    while ((mm = re.exec(text)) !== null) {
+      const v = parseFloat(mm[0].replace(/,/g, ''));
+      if (v > 0 && v < 1000000 && !(v >= 1900 && v <= 2099)) nums.push(v);
+    }
+    if (nums.length) out.amount = Math.max(...nums);
+  }
 
   // ---------- 類別（關鍵字）----------
   if (/機票|高鐵|高铁|火車|火车|計程車|出租車|出租车|地铁|地鐵|公車|公交|加油|燃油|停車|停车|交通|打的|滴滴|航空|航班|TAXI|Taxi|机票/.test(text)) out.category = '交通';
@@ -814,6 +826,7 @@ async function finishCrop() {
     toast('請至少框選一張發票');
     return;
   }
+  const count = cropPending.length;
   for (const p of cropPending) {
     const blob = dataURLToBlob(p.dataURL);
     const imgId = uid();
@@ -836,7 +849,8 @@ async function finishCrop() {
   }
   closeCrop();
   renderAll();
-  toast('已新增 ' + cropPending.length + ' 筆發票');
+  switchTab('tab-expense');
+  toast('已新增 ' + count + ' 筆發票，請確認金額/幣別/類別');
 }
 function closeCrop() {
   cropModal.classList.remove('open');
@@ -1266,13 +1280,15 @@ function downloadWorkbook(wb, filename) {
 // ============================================================
 // 事件綁定
 // ============================================================
+function switchTab(id) {
+  $$('.tab').forEach(x => x.classList.toggle('active', x.dataset.tab === id));
+  $$('.panel').forEach(p => p.classList.toggle('active', p.id === id));
+}
+
 function bindEvents() {
   // Tab 切換
   $$('.tab').forEach(t => t.addEventListener('click', () => {
-    $$('.tab').forEach(x => x.classList.remove('active'));
-    t.classList.add('active');
-    $$('.panel').forEach(p => p.classList.remove('active'));
-    $('#' + t.dataset.tab).classList.add('active');
+    switchTab(t.dataset.tab);
   }));
 
   // 匯率表

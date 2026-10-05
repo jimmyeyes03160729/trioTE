@@ -31,7 +31,7 @@ function defaultState() {
     rates: JSON.parse(JSON.stringify(DEFAULT_RATES)),
     dailyLimit: 600,
     report: {
-      companies: ['塞席爾商三集瑞'],
+      company: '塞席爾商三集瑞',
       tripType: '國外',
       fillDate: todayStr(),
       person: '',
@@ -54,6 +54,11 @@ function loadState() {
     if (raw) {
       const s = JSON.parse(raw);
       const d = defaultState();
+      // 舊版 companies(array) 遷移為 company(string)
+      if (s.report && Array.isArray(s.report.companies)) {
+        s.report.company = s.report.companies[0] || d.report.company;
+        delete s.report.companies;
+      }
       return Object.assign(d, s);
     }
   } catch (e) { console.warn('loadState', e); }
@@ -214,11 +219,11 @@ function renderReport() {
   const list = $('#company-list');
   list.innerHTML = '';
   COMPANIES.forEach(c => {
-    const on = (r.companies || []).includes(c);
+    const on = r.company === c;
     const lb = document.createElement('label');
     lb.className = on ? 'on' : '';
-    lb.innerHTML = `<input type="checkbox" value="${esc(c)}" ${on ? 'checked' : ''}> ${esc(c)}`;
-    lb.querySelector('input').addEventListener('change', updateCompanies);
+    lb.innerHTML = `<input type="radio" name="company" value="${esc(c)}" ${on ? 'checked' : ''}> ${esc(c)}`;
+    lb.querySelector('input').addEventListener('change', updateCompany);
     list.appendChild(lb);
   });
   $('#f-fill-date').value = r.fillDate || '';
@@ -233,10 +238,9 @@ function renderReport() {
   $$('input[name="trip-type"]').forEach(x => x.checked = (x.value === r.tripType));
   computeDays();
 }
-function updateCompanies() {
-  const vals = [];
-  $$('#company-list input:checked').forEach(cb => vals.push(cb.value));
-  state.report.companies = vals;
+function updateCompany() {
+  const sel = $('#company-list input:checked');
+  state.report.company = sel ? sel.value : '';
   $$('#company-list label').forEach(lb => {
     const cb = lb.querySelector('input');
     lb.classList.toggle('on', cb.checked);
@@ -262,6 +266,15 @@ function renderSummary() {
     { lbl: '憑證張數', val: state.expenses.length + ' 張' },
     { lbl: '本幣合計', val: 'NTD ' + fmt(totalTWD) },
   ];
+  // 分類小計（本幣台幣）
+  BASE_CATEGORIES.forEach(cat => {
+    const t = state.expenses.filter(e => e.category === cat).reduce((s, e) => s + localTotalOf(e), 0);
+    if (t > 0) chips.push({ lbl: cat + '費', val: fmt(t) });
+  });
+  state.customCategories.forEach(cat => {
+    const t = state.expenses.filter(e => e.category === cat).reduce((s, e) => s + localTotalOf(e), 0);
+    if (t > 0) chips.push({ lbl: cat, val: fmt(t) });
+  });
   // 每日膳食上限檢查
   const dayMeals = {};
   state.expenses.forEach(e => {
@@ -304,7 +317,7 @@ function renderExpenses() {
   const list = state.expenses.filter(e => catFilter === '全部' || e.category === catFilter);
   body.innerHTML = '';
   if (!list.length) {
-    body.innerHTML = '<tr><td colspan="15" style="text-align:center;color:var(--muted);padding:24px">尚無資料，請到「上傳發票」分頁新增</td></tr>';
+    body.innerHTML = '<tr><td colspan="11" style="text-align:center;color:var(--muted);padding:24px">尚無資料，可到「上傳發票」分頁上傳，或點「手動新增一筆」</td></tr>';
     return;
   }
   list.forEach(e => {
@@ -328,13 +341,9 @@ function renderExpenseRow(e) {
     <td>${thumb}</td>
     <td><input type="date" value="${esc(e.date || '')}" data-k="date" title="日期"></td>
     <td><select data-k="currency" title="幣別">${curOpts}</select></td>
-    <td><input type="number" step="0.01" class="num" value="${e.amount}" data-k="amount" title="原幣金額"></td>
-    <td><input type="number" step="0.0001" class="num" value="${e.rate}" data-k="rate" title="適用匯率"></td>
     <td><select data-k="category" title="類別">${catOpts}</select></td>
-    <td class="fee" data-fee="0"></td>
-    <td class="fee" data-fee="1"></td>
-    <td class="fee" data-fee="2"></td>
-    <td class="fee" data-fee="3"></td>
+    <td><input type="number" step="0.01" class="num" value="${e.amount}" data-k="amount" title="金額(原幣)"></td>
+    <td><input type="number" step="0.0001" class="num" value="${e.rate}" data-k="rate" title="適用匯率"></td>
     <td class="local-total"></td>
     <td><select data-k="trans" title="消費方式"><option ${e.trans === '現金' ? 'selected' : ''}>現金</option><option ${e.trans === '信用卡' ? 'selected' : ''}>信用卡</option></select></td>
     <td><input value="${esc(e.desc || '')}" data-k="desc" title="說明" placeholder="說明"></td>
@@ -342,7 +351,6 @@ function renderExpenseRow(e) {
     <td><button class="del" data-del="${idx}" title="刪除">✕</button></td>
   `;
 
-  // 填入四個費用欄與本幣合計
   updateFeeCells(tr, e);
 
   // 圖片縮圖載入
@@ -364,7 +372,6 @@ function renderExpenseRow(e) {
       if (k === 'amount' || k === 'rate') v = num(v);
       e[k] = v;
       if (k === 'currency') e.rate = getRate(v); // 換幣別自動帶匯率
-      if (k === 'category') { /* 移動到自訂類別即歸類 */ }
       updateFeeCells(tr, e);
       saveState();
       renderSummary();
@@ -380,11 +387,7 @@ function renderExpenseRow(e) {
 }
 
 function updateFeeCells(tr, e) {
-  const fi = catToIndex(e.category);
   const local = localTotalOf(e);
-  tr.querySelectorAll('.fee').forEach(td => {
-    td.textContent = (Number(td.dataset.fee) === fi) ? fmt(local) : '';
-  });
   tr.querySelector('.local-total').textContent = fmt(local);
   tr.classList.toggle('over-limit', isOverLimit(e));
 }
@@ -489,10 +492,19 @@ function openCrop(uploadIdx) {
     cropPending = [];
     fitCanvas();
     drawCropCanvas();
-    renderCropPreviews();
     cropModal.classList.add('open');
+    setCropGuide('正在自動偵測發票位置…');
+    // 自動偵測（找不到就整張當一框）
+    autoDetectRects();
+    // 自動辨識金額/幣別/日期
+    autoRunOCR();
   };
   img.src = u.dataURL;
+}
+
+function setCropGuide(msg) {
+  const g = $('#crop-guide');
+  if (g) g.textContent = msg;
 }
 
 function fitCanvas() {
@@ -525,7 +537,9 @@ function drawCropCanvas() {
 
 function getPos(e) {
   const rect = cropCanvas.getBoundingClientRect();
-  return { x: (e.clientX - rect.left), y: (e.clientY - rect.top) };
+  const sx = cropCanvas.width / rect.width;
+  const sy = cropCanvas.height / rect.height;
+  return { x: (e.clientX - rect.left) * sx, y: (e.clientY - rect.top) * sy };
 }
 
 cropCanvas.addEventListener('mousedown', (e) => {
@@ -606,11 +620,11 @@ function autoDetectRects() {
   const picked = comps.slice(0, 12);
   if (picked.length) {
     cropRect = picked.map(c => ({ x: c.x, y: c.y, w: c.w, h: c.h }));
-    toast('自動偵測到 ' + picked.length + ' 個發票區塊');
+    setCropGuide(`自動偵測到 ${picked.length} 個發票區塊。綠色框可拖曳調整，或直接重新畫框。`);
   } else {
     // 找不到就整張當一框
     cropRect = [{ x: 0, y: 0, w: W, h: H }];
-    toast('未偵測到多張，預設整張為一框');
+    setCropGuide('未偵測到多張發票，已預設整張為一框。可在圖上拖曳畫框調整。');
   }
   drawCropCanvas();
   renderCropPreviews();
@@ -686,8 +700,9 @@ function loadTesseract() {
 }
 async function runOCR() {
   if (!cropPending.length) { toast('請先框選發票'); return; }
-  $('#btn-ocr').disabled = true;
-  $('#btn-ocr').textContent = '辨識中…';
+  const btn = $('#btn-ocr');
+  const status = $('#crop-status');
+  if (btn) { btn.disabled = true; btn.textContent = '辨識中…'; }
   try {
     await loadTesseract();
     for (let i = 0; i < cropPending.length; i++) {
@@ -699,43 +714,59 @@ async function runOCR() {
       if (parsed.currency) p.currency = parsed.currency;
       if (parsed.date) p.date = parsed.date;
       if (parsed.category) p.category = parsed.category;
-      $('#btn-ocr').textContent = `辨識中… (${i + 1}/${cropPending.length})`;
+      if (status) status.textContent = `辨識中… (${i + 1}/${cropPending.length})`;
     }
     renderCropPreviews();
-    toast('辨識完成，請確認金額/幣別/日期');
+    if (status) status.textContent = '辨識完成，請確認並修改金額/幣別/日期';
+    setCropGuide('辨識完成。請確認下方各張的金額、幣別、日期是否正確（可直接修改），再按「完成」。');
   } catch (err) {
-    toast('OCR 失敗：' + err.message);
+    setCropGuide('自動辨識失敗，請手動填寫金額/幣別/日期。');
+    console.warn(err);
   } finally {
-    $('#btn-ocr').disabled = false;
-    $('#btn-ocr').textContent = '自動辨識金額/幣別/日期';
+    if (btn) { btn.disabled = false; btn.textContent = '重新辨識金額/幣別/日期'; }
+    if (status) status.textContent = '';
+  }
+}
+
+// 開啟裁切後自動執行辨識
+let autoOCRStarted = false;
+async function autoRunOCR() {
+  if (autoOCRStarted) return;
+  autoOCRStarted = true;
+  try {
+    await runOCR();
+  } finally {
+    autoOCRStarted = false;
   }
 }
 
 // 用文字規則解析發票
 function parseReceipt(text) {
   const out = { amount: null, currency: null, date: null, category: null };
-  // 日期
-  let m = text.match(/(20\d{2})[年\/\-\.](\d{1,2})[月\/\-\.](\d{1,2})/);
-  if (m) out.date = `${m[1]}-${String(m[2]).padStart(2, '0')}-${String(m[3]).padStart(2, '0')}`;
-  else {
-    m = text.match(/(\d{1,2})[月\/\-\.](\d{1,2})[日]?/);
-    if (m) {
-      const y = new Date().getFullYear();
-      out.date = `${y}-${String(m[1]).padStart(2, '0')}-${String(m[2]).padStart(2, '0')}`;
-    }
-  }
-  // 幣別
-  if (/NT\$|新臺幣|新台幣|台幣/.test(text)) out.currency = 'NTD';
-  else if (/HK\$|港幣|港元/.test(text)) out.currency = 'HKD';
-  else if (/￥|¥|人民幣|RMB|CNY|元/.test(text)) out.currency = 'RMB';
-  else if (/฿|泰銖|泰幣|THB/.test(text)) out.currency = 'THB';
-  else if (/\$\s?\d/.test(text) || /USD|美元/.test(text)) out.currency = 'USD';
+  // ---------- 日期（支援各國格式）----------
+  // 西元：2019/10/16、2019年10月16日、2019-10-16、2019.10.16
+  // 民國：108/10/12、108年10月12日、108.10.12（108 → 2019）
+  out.date = parseDateText(text);
+
+  // ---------- 幣別 ----------
+  if (/NT\$|新臺幣|新台幣|台幣|新台币/.test(text)) out.currency = 'NTD';
+  else if (/HK\$|港幣|港元|港币/.test(text)) out.currency = 'HKD';
+  else if (/￥|¥|人民幣|人民币|RMB|CNY|RMB|圓/.test(text)) out.currency = 'RMB';
+  else if (/฿|泰銖|泰铢|泰幣|THB/.test(text)) out.currency = 'THB';
+  else if (/\$[ ]?\d/.test(text) || /USD|美元/.test(text)) out.currency = 'USD';
+  else if (/[¥￥]/.test(text)) out.currency = 'RMB';
+  else if (/元/.test(text)) out.currency = 'RMB'; // 台灣發票常見「總計 元」
   else if (/NT/.test(text)) out.currency = 'NTD';
-  // 金額：優先抓 總計/合計/應付/实付/金額 後的數字
+
+  // ---------- 金額 ----------
+  // 優先：幣別符號/總計關鍵字 緊鄰的數字
   const amtPatterns = [
-    /(?:總計|合計|共计|合计|應付|应付|实付|實付|金額|金额|TOTAL|Total|AMOUNT)\D{0,6}?([0-9][0-9,]*\.?\d{0,2})/,
+    /(?:總計|合計|共计|合计|應付|应付|实付|實付|價稅合計|价税合计|金額|金额|小计|小計|TOTAL|Total|AMOUNT|Grand\s*Total)[^\d]{0,8}([0-9][0-9,]*\.?\d{0,2})/,
+    /[¥￥]\s*([0-9][0-9,]*\.?\d{0,2})/,
+    /NT\$?\s*([0-9][0-9,]*\.?\d{0,2})/,
+    /\$\s*([0-9][0-9,]*\.?\d{0,2})/,
     /([0-9]{1,3}(?:,[0-9]{3})+\.\d{1,2})/,
-    /([0-9]{2,6}\.\d{1,2})/,
+    /([0-9]{2,7}\.\d{1,2})/,
   ];
   for (const re of amtPatterns) {
     const mm = text.match(re);
@@ -744,11 +775,37 @@ function parseReceipt(text) {
       if (v > 0) { out.amount = v; break; }
     }
   }
-  // 類別（關鍵字）
-  if (/機票|高鐵|火車|計程車|出租車|地铁|地鐵|公車|公交|加油|燃油|停車|停车|交通|打的|滴滴|航空/.test(text)) out.category = '交通';
-  else if (/住宿|酒店|旅館|旅馆|飯店|民宿|房費|房费/.test(text)) out.category = '住宿';
-  else if (/餐|食堂|餐廳|餐厅|便當|便当|小吃|咖啡|外賣|外卖|麦当劳|麥當勞|肯德基|飯|饭|麵|面/.test(text)) out.category = '膳食';
+
+  // ---------- 類別（關鍵字）----------
+  if (/機票|高鐵|高铁|火車|火车|計程車|出租車|出租车|地铁|地鐵|公車|公交|加油|燃油|停車|停车|交通|打的|滴滴|航空|航班|TAXI|Taxi|机票/.test(text)) out.category = '交通';
+  else if (/住宿|酒店|旅館|旅馆|飯店|饭店|民宿|房費|房费|訂房|订房|HOTEL|Hotel/.test(text)) out.category = '住宿';
+  else if (/餐|食堂|餐廳|餐厅|便當|便当|小吃|咖啡|外賣|外卖|麦当劳|麥當勞|肯德基|飯|饭|麵|面|美食|早餐|午餐|晚餐|宵夜|膳食/.test(text)) out.category = '膳食';
   return out;
+}
+
+// 解析日期文字（支援西元/民國）
+function parseDateText(text) {
+  if (!text) return null;
+  // 完整年/月/日
+  let m = text.match(/(\d{2,4})\s*[年\/\-\.]\s*(\d{1,2})\s*[月\/\-\.]\s*(\d{1,2})\s*日?/);
+  if (m) {
+    let y = parseInt(m[1], 10);
+    if (y < 1912) y += 1911; // 民國年 → 西元
+    const mo = parseInt(m[2], 10), d = parseInt(m[3], 10);
+    if (mo >= 1 && mo <= 12 && d >= 1 && d <= 31) {
+      return `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    }
+  }
+  // 純 月/日（無年）
+  m = text.match(/(\d{1,2})\s*[月\/\-\.]\s*(\d{1,2})\s*日?/);
+  if (m) {
+    const mo = parseInt(m[1], 10), d = parseInt(m[2], 10);
+    if (mo >= 1 && mo <= 12 && d >= 1 && d <= 31) {
+      const y = (state.report.start && state.report.start.slice(0, 4)) || String(new Date().getFullYear());
+      return `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    }
+  }
+  return null;
 }
 
 // ---------- 裁切完成 ----------
@@ -863,15 +920,35 @@ function buildWorkbook() {
     XLSX.utils.book_append_sheet(wb, wsDay, dayName);
   });
 
-  // ---- 類別分頁（非膳食）----
-  const catSheets = { '交通': '交通費', '住宿': '住宿費', '其他': '其他費用' };
-  ['電信', '機票', '住宿', '大陸高鐵', '機場交通'].forEach((name, i) => {
+  // ---- 類別分頁（非膳食，放對應發票圖）----
+  const catSheetDefs = ['電信', '機票', '住宿', '大陸高鐵', '機場交通'];
+  const catMap = {};
+  catSheetDefs.forEach(name => catMap[name] = []);
+  state.expenses.forEach(e => {
+    if (e.category === '膳食') return;
+    const name = sheetNameForExpense(e);
+    if (catMap[name]) catMap[name].push(e);
+    else catMap['機票'].push(e);
+  });
+  catSheetDefs.forEach(name => {
     const wsCat = XLSX.utils.aoa_to_sheet([]);
-    wsCat['!cols'] = [{ wch: 14 }, { wch: 14 }];
+    wsCat['!cols'] = [{ wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 14 }];
+    embedImages(wsCat, catMap[name]);
     XLSX.utils.book_append_sheet(wb, wsCat, name);
   });
 
   return wb;
+}
+
+// 依發票內容決定放哪個類別分頁
+function sheetNameForExpense(e) {
+  const t = ((e.desc || '') + (e.category || ''));
+  if (/住宿|酒店|旅館|旅馆|飯店|饭店|民宿|房費|房费/.test(t)) return '住宿';
+  if (/高鐵|高铁|火車|火车/.test(t)) return '大陸高鐵';
+  if (/計程車|出租車|出租车|接送|機場交通|机场交通|打的|滴滴/.test(t)) return '機場交通';
+  if (/電信|漫遊|通讯|通信|電話|电话|SIM/.test(t)) return '電信';
+  if (/機票|机票|航空|航班|飛行|飞行/.test(t)) return '機票';
+  return (e.category === '交通') ? '機票' : '機票';
 }
 
 function addr(colIdx, row) {
@@ -944,11 +1021,7 @@ function buildReportSheet(ws) {
   ];
 
   // 公司勾選列
-  const coLines = [
-    '□三集瑞科技集團  ■塞席爾商三集瑞  □三積瑞科技蘇州  □東莞德泰利電子',
-    '□TRIO INT.       □APEC            □TRIO Seychelles □Wonstar',
-  ];
-  const coMark = (name) => (r.companies || []).includes(name) ? '■' : '□';
+  const coMark = (name) => (r.company === name) ? '■' : '□';
   const line1 = `       ${coMark('三集瑞科技集團')}三集瑞科技集團  ${coMark('塞席爾商三集瑞')}塞席爾商三集瑞  ${coMark('三積瑞科技蘇州')}三積瑞科技蘇州  ${coMark('東莞德泰利電子')}東莞德泰利電子`;
   const line2 = `       ${coMark('TRIO INT.')}TRIO INT.       ${coMark('APEC')}APEC            ${coMark('TRIO Seychelles')}TRIO Seychelles ${coMark('Wonstar')}Wonstar`;
   setCell(ws, 'A1', line1 + '\n' + line2, { font: { sz: 10 }, alignment: { vertical: 'center' } });
@@ -1166,8 +1239,8 @@ async function doExport() {
         try { await embedImagesAsync(wsDay[name]); } catch (e) { console.warn('圖片嵌入跳過', e); }
       }
     }
-    const fname = `出差報告暨旅費核銷_${state.report.person || ''}_${todayStr().replace(/-/g, '')}.xlsx`;
-    XLSX.writeFile(wb, fname);
+    const fname = `出差報告暨旅費核銷_${state.report.person || '報銷'}_${todayStr().replace(/-/g, '')}.xlsx`;
+    downloadWorkbook(wb, fname);
     toast('匯出完成，資料仍在本地端');
   } catch (err) {
     toast('匯出失敗：' + err.message);
@@ -1176,6 +1249,18 @@ async function doExport() {
     btn.disabled = false;
     btn.textContent = '匯出 Excel';
   }
+}
+
+function downloadWorkbook(wb, filename) {
+  const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+  const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1000);
 }
 
 // ============================================================
@@ -1259,7 +1344,13 @@ function bindEvents() {
   $('#btn-crop-done').addEventListener('click', finishCrop);
   $('#btn-crop-cancel').addEventListener('click', closeCrop);
   $('#btn-ocr').addEventListener('click', runOCR);
-  $('#btn-autodetect').addEventListener('click', autoDetectRects);
+  $('#btn-autodetect').addEventListener('click', () => { autoDetectRects(); autoRunOCR(); });
+
+  // 手動新增
+  $('#btn-add-manual').addEventListener('click', () => {
+    addExpense({ date: state.report.start || todayStr(), currency: 'NTD', amount: 0, category: '其他', trans: '現金' });
+    toast('已新增一筆，請填寫金額/類別');
+  });
 
   // 匯出 / 全清
   $('#btn-export').addEventListener('click', doExport);

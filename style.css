@@ -51,6 +51,8 @@ h2{margin:0 0 6px;font-size:18px}
 .company-list label{flex-direction:row;align-items:center;font-weight:400;border:1px solid var(--line);border-radius:6px;padding:5px 10px;cursor:pointer;background:#fff}
 .company-list label.on{border-color:var(--accent);background:#eff6ff;color:var(--accent)}
 .radio-group{display:flex;gap:14px;font-weight:400}
+.big-field{display:flex;flex-direction:column;gap:4px;font-weight:600;font-size:13px;margin-bottom:12px}
+.big-field textarea{width:100%;min-height:120px;resize:vertical}
 
 /* dropzone */
 .dropzone{border:2px dashed #c7cdd6;border-radius:var(--radius);padding:40px;text-align:center;color:var(--muted);cursor:pointer;background:#fff;transition:.15s}
@@ -90,7 +92,8 @@ h2{margin:0 0 6px;font-size:18px}
 .modal-box{background:#fff;border-radius:12px;width:min(1100px,100%);max-height:92vh;display:flex;flex-direction:column;overflow:hidden}
 .modal-head{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid var(--line);font-weight:600}
 .crop-stage{flex:1;overflow:auto;padding:12px;background:#20242b;text-align:center;position:relative}
-#crop-canvas{max-width:100%;cursor:crosshair;box-shadow:0 0 0 1px #000}
+#crop-canvas{display:block;margin:0 auto;cursor:crosshair;box-shadow:0 0 0 1px #000}
+.crop-guide{padding:8px 16px;background:#fff7ed;color:var(--warn);font-size:13px;border-bottom:1px solid #fed7aa}
 .crop-preview-label{padding:10px 16px 2px;color:var(--muted);font-size:12px}
 .crop-previews{display:flex;gap:10px;padding:10px 16px;overflow-x:auto;min-height:90px}
 .crop-previews .cp{position:relative;flex:0 0 auto}

@@ -45,7 +45,7 @@
   <section id="tab-report" class="panel">
     <h2>出差報告</h2>
     <div class="form-grid">
-      <label>所屬公司（勾選）
+      <label>所屬公司（擇一）
         <div class="company-list" id="company-list"></div>
       </label>
       <label>出差別
@@ -62,9 +62,9 @@
       <label>結束日期 <input type="date" id="f-end"></label>
       <label>合計天數 <input type="text" id="f-days" readonly></label>
     </div>
-    <label>出差執行重點：<textarea id="f-focus" rows="4"></textarea></label>
-    <label>問題整理及建議事項：<textarea id="f-issue" rows="4"></textarea></label>
-    <label>補充說明：<textarea id="f-note" rows="3"></textarea></label>
+    <label class="big-field">出差執行重點：<textarea id="f-focus" rows="8"></textarea></label>
+    <label class="big-field">問題整理及建議事項：<textarea id="f-issue" rows="8"></textarea></label>
+    <label class="big-field">補充說明：<textarea id="f-note" rows="6"></textarea></label>
   </section>
 
   <!-- ============ 上傳發票 ============ -->
@@ -85,6 +85,7 @@
     <div class="expense-toolbar">
       <span>分類瀏覽：</span>
       <div class="cat-filter" id="cat-filter"></div>
+      <button id="btn-add-manual" class="btn primary" style="margin-left:auto">+ 手動新增一筆</button>
     </div>
     <div class="table-wrap">
       <table class="expense-table" id="expense-table">
@@ -93,13 +94,9 @@
             <th>預覽</th>
             <th>日期</th>
             <th>幣別</th>
-            <th>原幣金額</th>
-            <th>適用匯率</th>
             <th>類別</th>
-            <th>交通</th>
-            <th>膳食</th>
-            <th>住宿</th>
-            <th>其他</th>
+            <th>金額(原幣)</th>
+            <th>適用匯率</th>
             <th>本幣合計</th>
             <th>消費方式</th>
             <th>說明</th>
@@ -110,7 +107,7 @@
         <tbody id="expense-body"></tbody>
       </table>
     </div>
-    <p class="hint small">金額、日期、幣別、類別皆可直接點擊修改。系統自動判別可手動修正；把項目移動到自訂類別即可歸類。每日合計(台幣)若超過上限會以紅色標示。</p>
+    <p class="hint small">金額、日期、幣別、類別皆可直接點擊修改。系統自動判別可手動修正；把項目移動到自訂類別即可歸類。每日膳食合計(台幣)若超過上限會以紅色標示。</p>
   </section>
 </main>
 
@@ -118,19 +115,21 @@
 <div class="modal" id="crop-modal">
   <div class="modal-box">
     <div class="modal-head">
-      <span>裁切發票（拖曳畫框，一框一張發票）</span>
+      <span>裁切發票</span>
       <div style="display:flex;gap:8px">
-        <button class="btn" id="btn-autodetect">自動偵測發票</button>
+        <button class="btn" id="btn-autodetect">重新自動偵測</button>
         <button class="btn primary" id="btn-crop-done">完成</button>
       </div>
     </div>
+    <div class="crop-guide" id="crop-guide">正在偵測發票位置…</div>
     <div class="crop-stage">
       <canvas id="crop-canvas"></canvas>
     </div>
-    <div class="crop-preview-label">裁切預覽：</div>
+    <div class="crop-preview-label">裁切預覽（辨識結果可在此直接修改）：</div>
     <div class="crop-previews" id="crop-previews"></div>
     <div class="modal-foot">
-      <button class="btn" id="btn-ocr">自動辨識金額/幣別/日期</button>
+      <span id="crop-status" style="color:var(--muted);font-size:13px;margin-right:auto"></span>
+      <button class="btn" id="btn-ocr">重新辨識金額/幣別/日期</button>
       <button class="btn" id="btn-crop-cancel">取消</button>
     </div>
   </div>

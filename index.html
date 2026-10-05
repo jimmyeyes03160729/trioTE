@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>trioTE 出差報銷懶人系統</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">trioTE <span>出差報銷懶人系統</span></div>
+  <div class="topbar-actions">
+    <button id="btn-export" class="btn primary">匯出 Excel</button>
+    <button id="btn-clear-all" class="btn danger">一鍵全清</button>
+  </div>
+</header>
+
+<nav class="tabs">
+  <button class="tab active" data-tab="tab-rate">1. 匯率</button>
+  <button class="tab" data-tab="tab-report">2. 出差報告</button>
+  <button class="tab" data-tab="tab-upload">3. 上傳發票</button>
+  <button class="tab" data-tab="tab-expense">4. 核銷明細</button>
+</nav>
+
+<main>
+  <!-- ============ 匯率 ============ -->
+  <section id="tab-rate" class="panel active">
+    <h2>匯率表輸入</h2>
+    <p class="hint">台幣(NTD)固定 1:1。其他幣別請自行填寫報銷匯率（請向會計確認，非出納借支匯率）。可自行增列幣別。</p>
+    <table class="rate-table" id="rate-table">
+      <thead>
+        <tr><th>幣別</th><th>報銷匯率</th><th></th></tr>
+      </thead>
+      <tbody id="rate-body"></tbody>
+    </table>
+    <div class="row-actions">
+      <button id="btn-add-rate" class="btn">+ 新增幣別</button>
+      <label class="limit-label">每日上限(台幣)：
+        <input type="number" id="daily-limit" min="0" step="1" value="600"> 元
+      </label>
+    </div>
+  </section>
+
+  <!-- ============ 出差報告 ============ -->
+  <section id="tab-report" class="panel">
+    <h2>出差報告</h2>
+    <div class="form-grid">
+      <label>所屬公司（勾選）
+        <div class="company-list" id="company-list"></div>
+      </label>
+      <label>出差別
+        <div class="radio-group">
+          <label><input type="radio" name="trip-type" value="國外" checked> 國外</label>
+          <label><input type="radio" name="trip-type" value="國內"> 國內</label>
+        </div>
+      </label>
+      <label>填寫日期 <input type="date" id="f-fill-date"></label>
+      <label>出差人員 <input type="text" id="f-person"></label>
+      <label>部門名稱 <input type="text" id="f-dept"></label>
+      <label>出差地區 <input type="text" id="f-region" placeholder="例如：蘇州、長沙、東莞"></label>
+      <label>開始日期 <input type="date" id="f-start"></label>
+      <label>結束日期 <input type="date" id="f-end"></label>
+      <label>合計天數 <input type="text" id="f-days" readonly></label>
+    </div>
+    <label>出差執行重點：<textarea id="f-focus" rows="4"></textarea></label>
+    <label>問題整理及建議事項：<textarea id="f-issue" rows="4"></textarea></label>
+    <label>補充說明：<textarea id="f-note" rows="3"></textarea></label>
+  </section>
+
+  <!-- ============ 上傳發票 ============ -->
+  <section id="tab-upload" class="panel">
+    <h2>上傳發票 / 票據</h2>
+    <p class="hint">上傳後系統會自動偵測發票位置並框選；點擊「裁切調整」可自行拖動方框。一張照片含多張發票也會自動辨識。</p>
+    <div class="dropzone" id="dropzone">
+      <input type="file" id="file-input" accept="image/*" multiple hidden>
+      <p>點此選擇圖片，或拖曳圖片到這裡</p>
+    </div>
+    <div class="upload-stack" id="upload-stack"></div>
+  </section>
+
+  <!-- ============ 核銷明細 ============ -->
+  <section id="tab-expense" class="panel">
+    <h2>旅費核銷明細</h2>
+    <div class="summary-bar" id="summary-bar"></div>
+    <div class="expense-toolbar">
+      <span>分類瀏覽：</span>
+      <div class="cat-filter" id="cat-filter"></div>
+    </div>
+    <div class="table-wrap">
+      <table class="expense-table" id="expense-table">
+        <thead>
+          <tr>
+            <th>預覽</th>
+            <th>日期</th>
+            <th>幣別</th>
+            <th>原幣金額</th>
+            <th>適用匯率</th>
+            <th>類別</th>
+            <th>交通</th>
+            <th>膳食</th>
+            <th>住宿</th>
+            <th>其他</th>
+            <th>本幣合計</th>
+            <th>消費方式</th>
+            <th>說明</th>
+            <th>憑證編號</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="expense-body"></tbody>
+      </table>
+    </div>
+    <p class="hint small">金額、日期、幣別、類別皆可直接點擊修改。系統自動判別可手動修正；把項目移動到自訂類別即可歸類。每日合計(台幣)若超過上限會以紅色標示。</p>
+  </section>
+</main>
+
+<!-- 裁切 modal -->
+<div class="modal" id="crop-modal">
+  <div class="modal-box">
+    <div class="modal-head">
+      <span>裁切發票（拖曳畫框，一框一張發票）</span>
+      <div style="display:flex;gap:8px">
+        <button class="btn" id="btn-autodetect">自動偵測發票</button>
+        <button class="btn primary" id="btn-crop-done">完成</button>
+      </div>
+    </div>
+    <div class="crop-stage">
+      <canvas id="crop-canvas"></canvas>
+    </div>
+    <div class="crop-preview-label">裁切預覽：</div>
+    <div class="crop-previews" id="crop-previews"></div>
+    <div class="modal-foot">
+      <button class="btn" id="btn-ocr">自動辨識金額/幣別/日期</button>
+      <button class="btn" id="btn-crop-cancel">取消</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -116,3 +116,16 @@ h2{margin:0 0 6px;font-size:18px}
 
 .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#111827;color:#fff;padding:10px 18px;border-radius:8px;opacity:0;pointer-events:none;transition:.25s;z-index:100}
 .toast.show{opacity:1}
+
+/* 上傳分頁：pending 清單與工具列 */
+.section-head{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin:20px 0 12px;padding-top:16px;border-top:1px solid var(--line)}
+.section-head h3{margin:0;font-size:15px}
+.upload-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.upload-tools input{padding:7px 10px;border:1px solid var(--line);border-radius:7px;font-size:13px;width:120px}
+.pending-list{display:flex;flex-direction:column;gap:8px}
+.pending-item{display:flex;align-items:center;gap:10px;background:#fff;border:1px solid var(--line);border-radius:var(--radius);padding:10px 12px;flex-wrap:wrap}
+.pending-item .thumb{width:56px;height:56px;background:#f0f1f3 center/cover no-repeat;border-radius:6px;border:1px solid var(--line);flex:0 0 auto;cursor:pointer}
+.pending-item input,.pending-item select{padding:6px 8px;border:1px solid var(--line);border-radius:6px;font-size:13px}
+.pending-item input.num{width:90px;text-align:right}
+.pending-item .lbl{font-size:12px;color:var(--muted)}
+.pending-item .del{border:none;background:none;color:var(--danger);cursor:pointer;font-size:16px;margin-left:auto}

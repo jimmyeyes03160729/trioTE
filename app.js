@@ -45,6 +45,7 @@ function defaultState() {
     },
     customCategories: [],
     expenses: [],
+    pending: [],
   };
 }
 
@@ -192,6 +193,7 @@ function renderAll() {
   renderSummary();
   renderCatFilter();
   renderExpenses();
+  renderPending();
 }
 
 // ---------- 匯率 ----------
@@ -469,6 +471,73 @@ function renderUploadStack() {
     });
     uploadStack.appendChild(card);
   });
+}
+
+// ---------- 待確認（已裁切）發票清單，依日期排列 ----------
+function renderPending() {
+  const box = $('#pending-list');
+  if (!box) return;
+  const sorted = [...state.pending].sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+  box.innerHTML = '';
+  if (!sorted.length) {
+    box.innerHTML = '<p class="hint small" style="margin:8px 0 0">尚未裁切發票，上傳圖片後點圖裁切。</p>';
+    return;
+  }
+  sorted.forEach((p, si) => {
+    const idx = state.pending.indexOf(p);
+    const cats = allCats();
+    const catOpts = cats.map(c => `<option ${c === p.category ? 'selected' : ''}>${esc(c)}</option>`).join('');
+    const curOpts = state.rates.map(r => `<option ${r.code === p.currency ? 'selected' : ''}>${esc(r.code)}</option>`).join('');
+    const item = document.createElement('div');
+    item.className = 'pending-item';
+    item.innerHTML = `
+      <div class="thumb" data-img="${esc(p.imgId || '')}"></div>
+      <div><span class="lbl">日期</span><br><input type="date" value="${esc(p.date || '')}" data-k="date"></div>
+      <div><span class="lbl">幣別</span><br><select data-k="currency">${curOpts}</select></div>
+      <div><span class="lbl">類別</span><br><select data-k="category">${catOpts}</select></div>
+      <div><span class="lbl">金額(原幣)</span><br><input type="number" step="0.01" class="num" value="${p.amount}" data-k="amount"></div>
+      <div><span class="lbl">說明</span><br><input value="${esc(p.desc || '')}" data-k="desc" placeholder="說明"></div>
+      <button class="del" data-del="${idx}" title="刪除">✕</button>
+    `;
+    // 縮圖
+    const thumbEl = item.querySelector('.thumb');
+    if (p.imgId) {
+      idbGet(p.imgId).then(b => { if (b) blobToDataURL(b).then(u => thumbEl.style.backgroundImage = `url(${u})`).catch(() => {}); });
+    }
+    thumbEl.addEventListener('click', () => { if (p.imgId) openImagePreview(p.imgId); });
+    // 編輯
+    item.querySelectorAll('[data-k]').forEach(inp => {
+      inp.addEventListener('change', () => {
+        const k = inp.dataset.k;
+        let v = inp.value;
+        if (k === 'amount') v = num(v);
+        if (p) {
+          p[k] = v;
+          if (k === 'currency') p.rate = getRate(v);
+        }
+        saveState();
+      });
+    });
+    item.querySelector('[data-del]').addEventListener('click', () => {
+      if (p.imgId) idbDel(p.imgId).catch(() => {});
+      state.pending.splice(idx, 1);
+      saveState();
+      renderPending();
+    });
+    box.appendChild(item);
+  });
+}
+
+// 將「待確認」全部加入核銷明細
+function commitPending() {
+  if (!state.pending.length) { toast('尚未有已裁切的發票'); return; }
+  const n = state.pending.length;
+  state.expenses.push(...state.pending);
+  state.pending = [];
+  saveState();
+  renderAll();
+  switchTab('tab-expense');
+  toast('已加入 ' + n + ' 筆發票到核銷明細');
 }
 
 // ---------- 裁切 modal ----------
@@ -831,13 +900,18 @@ async function finishCrop() {
     const blob = dataURLToBlob(p.dataURL);
     const imgId = uid();
     await idbPut(imgId, blob).catch(() => {});
-    await addExpense({
-      imgId,
+    // 加入「待確認」清單（仍在「上傳發票」分頁，依日期排列）
+    state.pending.push({
+      id: uid(),
       date: p.date || state.report.start || todayStr(),
       currency: p.currency || 'NTD',
       amount: num(p.amount),
+      rate: num(p.rate != null ? p.rate : getRate(p.currency || 'NTD')),
       category: p.category || '其他',
       trans: '現金',
+      desc: '',
+      receiptNo: '',
+      imgId,
     });
   }
   // 移除原圖 entry
@@ -848,9 +922,9 @@ async function finishCrop() {
     renderUploadStack();
   }
   closeCrop();
-  renderAll();
-  switchTab('tab-expense');
-  toast('已新增 ' + count + ' 筆發票，請確認金額/幣別/類別');
+  saveState();
+  renderPending();
+  toast('已裁切 ' + count + ' 張發票，請確認下方明細後按「完成」');
 }
 function closeCrop() {
   cropModal.classList.remove('open');
@@ -1373,6 +1447,7 @@ function bindEvents() {
   $('#btn-clear-all').addEventListener('click', () => {
     if (!confirm('確定要清除所有資料（發票、明細、報告）嗎？此動作無法復原。')) return;
     state.expenses = [];
+    state.pending = [];
     state.report = defaultState().report;
     state.customCategories = [];
     state.rates = JSON.parse(JSON.stringify(DEFAULT_RATES));
@@ -1385,7 +1460,21 @@ function bindEvents() {
   });
 }
 
-// 新增自訂類別入口（放在核銷明細工具列）
+// 新增自訂類別（共用：核銷明細與上傳分頁連動）
+function addCustomCat(name) {
+  name = (name || '').trim();
+  if (!name) return false;
+  if (BASE_CATEGORIES.includes(name) || state.customCategories.includes(name)) { toast('類別已存在'); return false; }
+  state.customCategories.push(name);
+  saveState();
+  renderCatFilter();
+  renderExpenses();
+  renderPending();
+  toast('已新增類別「' + name + '」');
+  return true;
+}
+
+// 新增自訂類別入口（核銷明細工具列）
 function ensureCustomCatInput() {
   let bar = $('#cat-filter');
   if ($('#custom-cat-input')) return;
@@ -1395,23 +1484,30 @@ function ensureCustomCatInput() {
   wrap.innerHTML = `<input id="custom-cat-input" placeholder="新增類別…" style="padding:5px 10px;border:1px solid var(--line);border-radius:20px;font-size:12px;width:110px"><button class="btn" id="custom-cat-add" style="padding:4px 10px;font-size:12px">+</button>`;
   bar.parentNode.appendChild(wrap);
   $('#custom-cat-add').addEventListener('click', () => {
-    const v = $('#custom-cat-input').value.trim();
-    if (!v) return;
-    if (BASE_CATEGORIES.includes(v) || state.customCategories.includes(v)) { toast('類別已存在'); return; }
-    state.customCategories.push(v);
-    $('#custom-cat-input').value = '';
-    saveState();
-    renderCatFilter();
-    renderExpenses();
-    toast('已新增類別「' + v + '」');
+    if (addCustomCat($('#custom-cat-input').value)) $('#custom-cat-input').value = '';
   });
   $('#custom-cat-input').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') $('#custom-cat-add').click();
   });
 }
 
+// 上傳分頁：新增類別 + 完成按鈕
+function ensureUploadCatInput() {
+  const inp = $('#upload-cat-input');
+  const addBtn = $('#upload-cat-add');
+  if (!inp || !addBtn) return;
+  addBtn.addEventListener('click', () => {
+    if (addCustomCat(inp.value)) inp.value = '';
+  });
+  inp.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') addBtn.click();
+  });
+  $('#btn-commit').addEventListener('click', commitPending);
+}
+
 // 啟動
 bindEvents();
 ensureCustomCatInput();
+ensureUploadCatInput();
 renderAll();
 renderUploadStack();

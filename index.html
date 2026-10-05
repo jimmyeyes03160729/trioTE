@@ -86,12 +86,22 @@
   <!-- ============ 上傳發票 ============ -->
   <section id="tab-upload" class="panel">
     <h2>上傳發票 / 票據</h2>
-    <p class="hint">上傳後系統會自動偵測發票位置並框選；點擊「裁切調整」可自行拖動方框。一張照片含多張發票也會自動辨識。</p>
+    <p class="hint">上傳後會自動偵測發票並辨識金額/幣別/日期。一張照片含多張發票也會各自框出，可點圖重新裁切。確認下方明細無誤後按「完成」加入核銷明細。</p>
     <div class="dropzone" id="dropzone">
       <input type="file" id="file-input" accept="image/*" multiple hidden>
       <p>點此選擇圖片，或拖曳圖片到這裡</p>
     </div>
     <div class="upload-stack" id="upload-stack"></div>
+
+    <div class="section-head">
+      <h3>已裁切發票（依日期排列）</h3>
+      <div class="upload-tools">
+        <input id="upload-cat-input" placeholder="新增類別…">
+        <button class="btn" id="upload-cat-add">＋新增類別</button>
+        <button class="btn primary" id="btn-commit">完成 → 加入核銷明細</button>
+      </div>
+    </div>
+    <div class="pending-list" id="pending-list"></div>
   </section>
 
   <!-- ============ 核銷明細 ============ -->
@@ -134,7 +144,7 @@
       <span>裁切發票</span>
       <div style="display:flex;gap:8px">
         <button class="btn" id="btn-autodetect">重新自動偵測</button>
-        <button class="btn primary" id="btn-crop-done">完成</button>
+        <button class="btn" id="btn-crop-cancel">取消</button>
       </div>
     </div>
     <div class="crop-guide" id="crop-guide">正在偵測發票位置…</div>
@@ -146,7 +156,7 @@
     <div class="modal-foot">
       <span id="crop-status" style="color:var(--muted);font-size:13px;margin-right:auto"></span>
       <button class="btn" id="btn-ocr">重新辨識金額/幣別/日期</button>
-      <button class="btn" id="btn-crop-cancel">取消</button>
+      <button class="btn primary" id="btn-crop-done">完成</button>
     </div>
   </div>
 </div>

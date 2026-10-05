@@ -194,6 +194,7 @@ function renderAll() {
   renderCatFilter();
   renderExpenses();
   renderPending();
+  renderUploadCats();
 }
 
 // ---------- 匯率 ----------
@@ -526,6 +527,17 @@ function renderPending() {
     });
     box.appendChild(item);
   });
+}
+
+// 顯示上傳分頁已有的類別（新增類別左側）
+function renderUploadCats() {
+  const box = $('#upload-cats');
+  if (!box) return;
+  const cats = allCats();
+  box.innerHTML = cats.map(c => {
+    const isCustom = !BASE_CATEGORIES.includes(c);
+    return `<span class="tag ${isCustom ? 'custom' : ''}">${esc(c)}</span>`;
+  }).join('');
 }
 
 // 將「待確認」全部加入核銷明細
@@ -1470,6 +1482,7 @@ function addCustomCat(name) {
   renderCatFilter();
   renderExpenses();
   renderPending();
+  renderUploadCats();
   toast('已新增類別「' + name + '」');
   return true;
 }

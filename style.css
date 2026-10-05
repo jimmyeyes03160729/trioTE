@@ -122,6 +122,9 @@ h2{margin:0 0 6px;font-size:18px}
 .section-head h3{margin:0;font-size:15px}
 .upload-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .upload-tools input{padding:7px 10px;border:1px solid var(--line);border-radius:7px;font-size:13px;width:120px}
+.upload-cats{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.upload-cats .tag{font-size:12px;padding:4px 10px;border-radius:20px;background:#eff6ff;color:var(--accent);border:1px solid #bfdbfe;white-space:nowrap}
+.upload-cats .tag.custom{background:#f0fdf4;color:var(--ok);border-color:#bbf7d0}
 .pending-list{display:flex;flex-direction:column;gap:8px}
 .pending-item{display:flex;align-items:center;gap:10px;background:#fff;border:1px solid var(--line);border-radius:var(--radius);padding:10px 12px;flex-wrap:wrap}
 .pending-item .thumb{width:56px;height:56px;background:#f0f1f3 center/cover no-repeat;border-radius:6px;border:1px solid var(--line);flex:0 0 auto;cursor:pointer}

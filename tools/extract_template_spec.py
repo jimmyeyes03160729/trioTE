@@ -15,10 +15,13 @@ import zipfile
 from pathlib import Path
 
 import openpyxl
+from openpyxl.styles.colors import COLOR_INDEX
 from openpyxl.utils import get_column_letter
 
 MAIN = '2. 出差報告暨旅費核銷明細表'
 RATE = '1. 匯率表輸入'
+COST = '出差費用種類'          # 整頁照抄（公司規定文字）
+DAILY = '出差日報及交際費明細'  # 表頭照抄，資料列由 app.js 依出差日期產生
 COLS = 17  # A..Q
 
 # 範本列 → 角色。app.js 依角色動態排版（明細列數、幣別列數可變）
@@ -80,6 +83,8 @@ def color(c):
         return 'FF' + c.rgb[-6:]
     if c.type == 'theme' and isinstance(c.theme, int):
         return 'FF' + tint(THEME[c.theme], c.tint or 0)
+    if c.type == 'indexed' and isinstance(c.indexed, int) and c.indexed < len(COLOR_INDEX):
+        return 'FF' + COLOR_INDEX[c.indexed][-6:]
     return None
 
 
@@ -198,8 +203,29 @@ def main(path):
         'widths': col_widths(wr, 4),
     }
 
+    # 出差費用種類：整頁照抄
+    wc = wb[COST]
+    cost = {
+        'rows': [row_spec(wc, r, 3) for r in range(1, wc.max_row + 1)],
+        'merges': sorted(str(x) for x in wb_merged[COST].merged_cells.ranges),
+        'widths': col_widths(wc, 3),
+    }
+
+    # 出差日報及交際費明細：標題列、表頭列、資料列樣式、交際費總計樣式
+    wd = wb[DAILY]
+    dps = wd.page_setup
+    daily = {
+        'title': row_spec(wd, 1, 13),
+        'head': row_spec(wd, 2, 13),
+        'row': row_spec(wd, 3, 13, keep=set()),
+        'total': row_spec(wd, 11, 13, keep=set()),
+        'widths': col_widths(wd, 13),
+        'orientation': dps.orientation or 'landscape',
+        'zoom': 80,
+    }
+
     spec = {'styles': styles, 'header': header, 'headerMerges': merges, 'roles': roles,
-            'widths': widths, 'page': page, 'rate': rate}
+            'widths': widths, 'page': page, 'rate': rate, 'cost': cost, 'daily': daily}
     out = Path(__file__).resolve().parent.parent / 'template-spec.js'
     out.write_text('// 由 tools/extract_template_spec.py 自動產生，請勿手改\n'
                    '// 來源：公司範本「樣本-出差報告暨旅費核銷.xlsx」\n'

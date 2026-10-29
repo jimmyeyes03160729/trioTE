@@ -55,8 +55,8 @@ h2{margin:0 0 6px;font-size:18px}
 .report-field{display:flex;flex-direction:column;gap:5px}
 .report-field.full{grid-column:1 / -1}
 .field-label{font-size:12px;font-weight:600;color:var(--muted)}
-.report-field input,.report-field textarea,.big-field textarea{padding:8px 10px;border:1px solid var(--line);border-radius:7px;font-family:inherit;font-size:13px;background:#fbfcfe}
-.report-field input:focus,.big-field textarea:focus{border-color:var(--accent);outline:none;background:#fff}
+.report-field input,.report-field select,.report-field textarea,.big-field textarea{padding:8px 10px;border:1px solid var(--line);border-radius:7px;font-family:inherit;font-size:13px;background:#fbfcfe}
+.report-field input:focus,.report-field select:focus,.big-field textarea:focus{border-color:var(--accent);outline:none;background:#fff}
 .report-field input[readonly]{background:#f0f2f5;color:var(--muted)}
 .company-list{display:flex;flex-wrap:wrap;gap:8px}
 .company-list label{display:inline-flex;align-items:center;gap:6px;font-weight:400;font-size:13px;border:1px solid var(--line);border-radius:8px;padding:7px 12px;cursor:pointer;background:#fff;transition:.12s}

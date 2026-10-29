@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>trioTE 出差報銷懶人系統</title>
-<link rel="stylesheet" href="style.css?v=20261029c">
+<link rel="stylesheet" href="style.css?v=20261029e">
 </head>
 <body>
 <header class="topbar">
@@ -79,7 +79,15 @@
 
     <div class="card">
       <div class="card-title">補充說明</div>
-      <label class="big-field"><textarea id="f-note" rows="5" placeholder="例如：差旅費報銷請款合計…"></textarea></label>
+      <div class="report-grid">
+        <div class="report-field"><span class="field-label">已預付機票款(台幣)</span><input type="number" id="f-prepaid" min="0" step="1" placeholder="沒有就留空"></div>
+        <div class="report-field"><span class="field-label">預支幣別</span><select id="f-adv-cur"></select></div>
+        <div class="report-field"><span class="field-label">預支金額</span><input type="number" id="f-adv-amt" min="0" step="0.01" placeholder="沒有就留空"></div>
+        <div class="report-field"><span class="field-label">已還款金額</span><input type="number" id="f-adv-ret" min="0" step="0.01"></div>
+        <div class="report-field"><span class="field-label">還款日期</span><input type="date" id="f-adv-date"></div>
+      </div>
+      <p class="hint">匯出時會依公司範本自動組成補充說明（差旅費、交際費、預支扣款、實付請款金額）。下面可以再補充其他說明，會接在後面。</p>
+      <label class="big-field"><textarea id="f-note" rows="4" placeholder="其他補充說明（選填）"></textarea></label>
     </div>
   </section>
 
@@ -165,7 +173,7 @@
 
 <div class="toast" id="toast"></div>
 
-<script src="template-spec.js?v=20261029c"></script>
-<script src="app.js?v=20261029c"></script>
+<script src="template-spec.js?v=20261029e"></script>
+<script src="app.js?v=20261029e"></script>
 </body>
 </html>

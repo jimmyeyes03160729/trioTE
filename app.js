@@ -43,6 +43,11 @@ function defaultState() {
       focus: '',
       issue: '',
       note: '',
+      prepaid: '',     // 已預付機票款(台幣)
+      advCur: 'RMB',   // 預支幣別
+      advAmt: '',      // 預支金額
+      advRet: '',      // 已還款金額
+      advDate: '',     // 還款日期
     },
     customCategories: [],
     expenses: [],
@@ -216,6 +221,7 @@ function renderRates() {
     body.appendChild(tr);
   });
   $('#daily-limit').value = state.dailyLimit;
+  fillAdvCur();
 }
 
 // ---------- 出差報告 ----------
@@ -240,8 +246,19 @@ function renderReport() {
   $('#f-focus').value = r.focus || '';
   $('#f-issue').value = r.issue || '';
   $('#f-note').value = r.note || '';
+  fillAdvCur();
+  $('#f-prepaid').value = r.prepaid || '';
+  $('#f-adv-amt').value = r.advAmt || '';
+  $('#f-adv-ret').value = r.advRet || '';
+  $('#f-adv-date').value = r.advDate || '';
   $$('input[name="trip-type"]').forEach(x => x.checked = (x.value === r.tripType));
   computeDays();
+}
+function fillAdvCur() {
+  const sel = $('#f-adv-cur');
+  if (!sel) return;
+  const cur = state.report.advCur || 'RMB';
+  sel.innerHTML = state.rates.map(x => `<option ${x.code === cur ? 'selected' : ''}>${esc(x.code)}</option>`).join('');
 }
 function updateCompany() {
   const sel = $('#company-list input:checked');
@@ -826,6 +843,25 @@ async function autoRunOCR() {
 }
 
 // 用文字規則解析發票
+// 幣別判別：先看明確幣別字樣；沒有的話看文字
+//   繁體中文 → 台幣(NTD)、簡體中文 → 人民幣(RMB)、泰文 → THB、純英文 → USD
+const SIMP_CHARS = '发后们这个东门车费电话号说价税务计总额应实际单张时间区县广场楼层银联购买货优欢临谢员现种类汤饭鸡鱼虾开营业专码点厅馆饮乐与为仅质头问进认让账统规财';
+const TRAD_CHARS = '發後們這個東門車費電話號說價稅務計總額應實際單張時間區縣廣場樓層銀聯購買貨優歡臨謝員現種類湯飯雞魚蝦開營業專碼點廳館飲樂與為僅質頭問進認讓帳統規財臺';
+function countChars(text, set) { let n = 0; for (const ch of text) if (set.includes(ch)) n++; return n; }
+function detectCurrency(text) {
+  const t = String(text || '');
+  if (/NT\$|NTD|TWD|新臺幣|新台幣|台幣|臺幣|新台币/i.test(t)) return 'NTD';
+  if (/HK\$|HKD|港幣|港元|港币/i.test(t)) return 'HKD';
+  if (/人民幣|人民币|RMB|CNY|[¥￥]/i.test(t)) return 'RMB';
+  if (/฿|泰銖|泰铢|泰幣|THB|[\u0E00-\u0E7F]/i.test(t)) return 'THB';
+  if (/USD|US\$|美元|美金/i.test(t)) return 'USD';
+  const simp = countChars(t, SIMP_CHARS), trad = countChars(t, TRAD_CHARS);
+  if (simp || trad) return simp > trad ? 'RMB' : 'NTD';
+  if (/[\u4e00-\u9fff]/.test(t)) return null;          // 有中文但分不出繁簡 → 讓使用者選
+  if (/[A-Za-z]{3,}/.test(t)) return 'USD';               // 純英文
+  return null;
+}
+
 function parseReceipt(text) {
   const out = { amount: null, currency: null, date: null, category: null };
   // ---------- 日期（支援各國格式）----------
@@ -834,14 +870,7 @@ function parseReceipt(text) {
   out.date = parseDateText(text);
 
   // ---------- 幣別 ----------
-  if (/NT\$|新臺幣|新台幣|台幣|新台币/.test(text)) out.currency = 'NTD';
-  else if (/HK\$|港幣|港元|港币/.test(text)) out.currency = 'HKD';
-  else if (/￥|¥|人民幣|人民币|RMB|CNY|RMB|圓/.test(text)) out.currency = 'RMB';
-  else if (/฿|泰銖|泰铢|泰幣|THB/.test(text)) out.currency = 'THB';
-  else if (/\$[ ]?\d/.test(text) || /USD|美元/.test(text)) out.currency = 'USD';
-  else if (/[¥￥]/.test(text)) out.currency = 'RMB';
-  else if (/元/.test(text)) out.currency = 'RMB'; // 台灣發票常見「總計 元」
-  else if (/NT/.test(text)) out.currency = 'NTD';
+  out.currency = detectCurrency(text);
 
   // ---------- 金額 ----------
   // 優先：幣別符號/總計關鍵字 緊鄰的數字
@@ -970,10 +999,34 @@ function openImagePreview(imgId) {
 //   - 發票圖片嵌入 類別分頁 / 膳食每日分頁
 // ============================================================
 const EXCELJS_URL = 'https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js';
+const JSZIP_URL = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
 const MAIN_SHEET = '2. 出差報告暨旅費核銷明細表';
 const RATE_SHEET = '1. 匯率表輸入';
 const DETAIL_START = 28; // 範本明細從第 28 列開始
 
+function loadScript(url, globalName) {
+  if (window[globalName]) return Promise.resolve();
+  return new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = url;
+    s.onload = () => res();
+    s.onerror = () => rej(new Error(globalName + ' 載入失敗（需要網路）'));
+    document.head.appendChild(s);
+  });
+}
+// Excel 的欄寬是用「預設字型(Normal)的數字寬」換算的。
+// 範本預設字型是 新細明體 12（數字寬 8px），ExcelJS 固定寫 Calibri 11（7px），
+// 同樣的欄寬數字會窄約 12%，日期就變成 ######。這裡把預設字型改回跟範本一樣。
+async function patchDefaultFont(buf) {
+  await loadScript(JSZIP_URL, 'JSZip');
+  const zip = await JSZip.loadAsync(buf);
+  const f = zip.file('xl/styles.xml');
+  let xml = await f.async('string');
+  xml = xml.replace(/(<fonts\b[^>]*>)<font>[\s\S]*?<\/font>/,
+    '$1<font><sz val="12"/><color theme="1"/><name val="新細明體"/><family val="1"/><charset val="136"/></font>');
+  zip.file('xl/styles.xml', xml);
+  return zip.generateAsync({ type: 'arraybuffer', compression: 'DEFLATE' });
+}
 function loadExcelJS() {
   if (window.ExcelJS) return Promise.resolve();
   return new Promise((res, rej) => {
@@ -1018,6 +1071,27 @@ function expenseRateInfo(e) {
   const table = getRate(e.currency);
   const used = num(e.rate) || table;
   return { table, used, custom: Math.abs(used - table) > 1e-9 };
+}
+// 主表的膳食：同幣別(+同消費方式、同匯率)合併成一列，明細在「膳食費憑證」分頁
+function mealSummaryRows(list) {
+  const groups = {};
+  list.filter(e => e.category === '膳食').forEach(e => {
+    const { used } = expenseRateInfo(e);
+    const trans = e.trans || '現金';
+    const k = [e.currency || 'NTD', trans, used].join('|');
+    const g = groups[k] = groups[k] || { currency: e.currency || 'NTD', trans, rate: used, amount: 0, dates: [] };
+    g.amount += num(e.amount);
+    if (e.date) g.dates.push(e.date);
+    if (e.dateEnd) g.dates.push(e.dateEnd);
+  });
+  return Object.values(groups).map(g => {
+    g.dates.sort();
+    return {
+      date: g.dates[0] || '', dateEnd: g.dates[g.dates.length - 1] || '',
+      currency: g.currency, trans: g.trans, rate: g.rate, amount: round2(g.amount),
+      category: '膳食', desc: '膳食費(明細詳膳食費憑證)', receiptNo: '詳膳食費憑證',
+    };
+  });
 }
 function sortByDate(list) {
   return list.slice().sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
@@ -1107,16 +1181,22 @@ function writeDetailRow(ws, r, spec, e, dv) {
   return { cur: e.currency || 'NTD', local, orig: num(e.amount) };
 }
 
-function writeDeductRow(ws, r, spec, o, dv) {
+// 膳食超限扣回：所有超限日合併成一列（日期 = 第一個～最後一個超限日）
+function writeDeductRow(ws, r, spec, overList, dv) {
   putRow(ws, r, spec);
-  const d = toXlDate(o.date);
-  if (d) { setV(ws, 'A' + r, d); setV(ws, 'B' + r, d); }
+  const o = {
+    excess: round2(overList.reduce((s, x) => s + x.excess, 0)),
+    limit: overList[0].limit,
+  };
+  const d1 = toXlDate(overList[0].date), d2 = toXlDate(overList[overList.length - 1].date);
+  if (d1) setV(ws, 'A' + r, d1);
+  if (d2) setV(ws, 'B' + r, d2);
   setV(ws, 'C' + r, '現金');
   setV(ws, 'D' + r, 'NTD');
   setF(ws, 'E' + r, rateFormula(r), 1);
   setV(ws, 'F' + r, 0); setV(ws, 'H' + r, -o.excess); setV(ws, 'J' + r, 0); setV(ws, 'L' + r, 0);
   setF(ws, 'N' + r, `E${r}*(F${r}+H${r}+J${r}+L${r})`, -o.excess);
-  setV(ws, 'P' + r, `膳食超限扣回(每日上限${fmt(o.limit, 0)}元)`);
+  setV(ws, 'P' + r, `膳食超限扣回(每日上限${fmt(o.limit, 0)}元，共${overList.length}天)`);
   dv[r] = true;
   return { cur: 'NTD', local: -o.excess, orig: -o.excess };
 }
@@ -1161,22 +1241,61 @@ function writeTotalsBlock(ws, r0, roles, d1, d2, allCodes, rows, count, merges) 
   merges.push(`D${rs}:E${rs}`, `F${rs}:H${rs}`, `J${rs}:O${rs}`);
   // 左側 檢附憑證 / 張數 / 旅費總計 直向合併
   merges.push(`A${r0}:A${rs}`, `B${r0}:B${rs}`, `C${r0}:C${rs}`);
-  return { sumRow: rs, next: rs + 1, total };
+  return { sumRow: rs, next: rs + 1, total, firstRow: r0 + 1, k };
 }
 
-function suppText(travelTotal, entTotal, hasEnt, over) {
-  const lines = [];
-  lines.push(`差旅費報銷，台幣${fmt(travelTotal, 0)}元。`);
-  if (over.length) {
-    const t = over.reduce((s, o) => s + o.excess, 0);
-    lines.push(`膳食費每日上限台幣${fmt(state.dailyLimit, 0)}元，超限共台幣${fmt(t, 0)}元已於明細扣回。`);
-  }
-  if (hasEnt) {
-    lines.push(`交際費報銷，台幣${fmt(entTotal, 0)}元。`);
-    lines.push(`請款合計台幣${fmt(travelTotal + entTotal, 0)}元。`);
-  }
-  String(state.report.note || '').split('\n').map(s => s.trim()).filter(Boolean).forEach(s => lines.push(s));
-  return lines.map((s, i) => `${i + 1}.${s}`).join('\n');
+// 補充說明 / 備註欄所需數字（預付機票款、預支未歸還扣款）
+function settlement(travelTotal, entTotal) {
+  const r = state.report;
+  const P = Math.round(num(r.prepaid));
+  const cur = r.advCur || 'RMB';
+  const label = cur === 'RMB' ? 'CNY' : (cur === 'NTD' ? 'TWD' : cur); // 範本寫法：CNY5,000
+  const A = num(r.advAmt), R = num(r.advRet);
+  const un = round2(Math.max(0, A - R));
+  const rate = cur === 'NTD' ? 1 : getRate(cur);
+  const D = Math.round(un * rate);
+  const final = travelTotal + entTotal - P - D;
+  let md = '';
+  if (r.advDate) { const [, m, d] = r.advDate.split('-').map(Number); md = `${m}/${d}`; }
+  return { P, A, R, un, rate, D, final, label, md };
+}
+function advanceText(x, withReturn) {
+  if (!(x.A > 0)) return '';
+  if (x.un <= 0) return `預支${x.label}${fmt(x.A)}${x.md ? ',' + x.md : ''}已全數歸還。`;
+  const ret = (withReturn && x.R > 0) ? `,${x.md ? x.md : ''}已還款 ${x.label}${fmt(x.R)}` : '';
+  return `預支${x.label}${fmt(x.A)}${ret}${withReturn ? ' ' : ','}未歸還${x.label}${fmt(x.un)}*${fmt(x.rate, 6)}(報銷匯率)=扣台幣${fmt(x.D, 0)}元。`;
+}
+// 同公司範本：
+// 1.差旅費報銷，台幣32,413。(其中已預付來回機票款20,300)
+// 2.交際費報銷，台幣5,098。
+// 3.預支CNY5,000,8/29已還款 CNY1,222 未歸還CNY3,778*4.072(報銷匯率)=扣台幣15,384元。
+// 4.實付台幣請款金額:
+// 差旅費32,413+交際費5,098=37,511-預付機票款20,300-未歸還預支台幣15,384=台幣1,227元。
+function suppText(T, E) {
+  const x = settlement(T, E);
+  const items = [];
+  items.push(`差旅費報銷，台幣${fmt(T, 0)}。` + (x.P > 0 ? `(其中已預付來回機票款${fmt(x.P, 0)})` : ''));
+  if (E > 0) items.push(`交際費報銷，台幣${fmt(E, 0)}。`);
+  const adv = advanceText(x, true);
+  if (adv) items.push(adv);
+  let expr = `差旅費${fmt(T, 0)}`;
+  if (E > 0) expr += `+交際費${fmt(E, 0)}`;
+  const hasMinus = x.P > 0 || x.D > 0;
+  if (E > 0 && hasMinus) expr += `=${fmt(T + E, 0)}`;
+  if (x.P > 0) expr += `-預付機票款${fmt(x.P, 0)}`;
+  if (x.D > 0) expr += `-未歸還預支台幣${fmt(x.D, 0)}`;
+  items.push('實付台幣請款金額:\n' + ((E > 0 || hasMinus) ? `${expr}=台幣${fmt(x.final, 0)}元。` : `台幣${fmt(x.final, 0)}元。`));
+  String(state.report.note || '').split('\n').map(t => t.trim()).filter(Boolean).forEach(t => items.push(t));
+  return items.map((t, i) => `${i + 1}.${t}`).join('\n');
+}
+// 旅費總計區「備註」欄（範本 J43 / J44）
+function totalsNotes(T, E) {
+  const x = settlement(T, E);
+  const out = [];
+  if (x.P > 0) out.push(`已預付來回機票款${fmt(x.P, 0)}。`);
+  const adv = advanceText(x, false);
+  if (adv) out.push(adv);
+  return out;
 }
 
 function buildMainSheet(wb, codes) {
@@ -1206,12 +1325,13 @@ function buildMainSheet(wb, codes) {
 
   // ---- 旅費明細 ----
   const travel = sortByDate(state.expenses.filter(e => e.category !== ENT_CATEGORY));
+  const travelRows = sortByDate([...travel.filter(e => e.category !== '膳食'), ...mealSummaryRows(travel)]);
   const ent = sortByDate(state.expenses.filter(e => e.category === ENT_CATEGORY));
   const over = mealOverLimitRows();
   const rows = [];
   let row = DETAIL_START;
-  travel.forEach(e => { rows.push(writeDetailRow(ws, row, T.detail, e, dvRows)); row++; });
-  over.forEach(o => { rows.push(writeDeductRow(ws, row, T.deduct, o, dvRows)); row++; });
+  travelRows.forEach(e => { rows.push(writeDetailRow(ws, row, T.detail, e, dvRows)); row++; });
+  if (over.length) { rows.push(writeDeductRow(ws, row, T.deduct, over, dvRows)); row++; }
   if (row === DETAIL_START) { putRow(ws, row, T.detail); dvRows[row] = true; row++; } // 至少留一列空白明細
   const d1 = DETAIL_START, d2 = row - 1;
 
@@ -1256,7 +1376,14 @@ function buildMainSheet(wb, codes) {
     merges.push(`A${row}:E${row}`, `F${row}:H${row}`, `J${row}:O${row}`);
     row++;
   }
-  setV(ws, 'B' + suppRow, suppText(tot.total, entTotal, ent.length > 0, over));
+  setV(ws, 'B' + suppRow, suppText(tot.total, entTotal));
+  // 備註欄：第一格放預付機票款，其餘放預支扣款（同範本 J43 / J44）
+  const notes = totalsNotes(tot.total, entTotal);
+  if (notes.length) {
+    const r1 = tot.firstRow, k = tot.k;
+    if (k === 1 || notes.length === 1) setV(ws, 'J' + r1, notes.join('\n'));
+    else { setV(ws, 'J' + r1, notes[0]); setV(ws, 'J' + (r1 + 1), notes.slice(1).join('\n')); }
+  }
   const lastRow = row - 1;
 
   // 合併（不覆蓋各格樣式，保留範本框線）
@@ -1575,7 +1702,7 @@ async function doExport() {
   try {
     await loadExcelJS();
     const wb = await buildWorkbook();
-    const buf = await wb.xlsx.writeBuffer();
+    const buf = await patchDefaultFont(await wb.xlsx.writeBuffer());
     downloadBlob(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), exportFileName());
     toast('匯出完成，資料仍在本地端');
   } catch (err) {
@@ -1618,7 +1745,16 @@ function bindEvents() {
       const i = Number(inp.dataset.i);
       const r = state.rates[i];
       if (!r) return;
-      r[inp.dataset.k] = inp.dataset.k === 'rate' ? num(inp.value) : inp.value;
+      if (inp.dataset.k === 'rate') {
+        // 匯率表改了 → 還在用舊匯率的明細一起更新（手動改過匯率的不動）
+        const prev = num(r.rate), next = num(inp.value);
+        [...state.expenses, ...state.pending].forEach(x => {
+          if (x.currency === r.code && Math.abs(num(x.rate) - prev) < 1e-9) x.rate = next;
+        });
+        r.rate = next;
+      } else {
+        r.code = inp.value;
+      }
       saveState();
       renderExpenses();
       renderSummary();
@@ -1650,6 +1786,8 @@ function bindEvents() {
     ['#f-fill-date', 'fillDate'], ['#f-person', 'person'], ['#f-dept', 'dept'],
     ['#f-region', 'region'], ['#f-start', 'start'], ['#f-end', 'end'],
     ['#f-focus', 'focus'], ['#f-issue', 'issue'], ['#f-note', 'note'],
+    ['#f-prepaid', 'prepaid'], ['#f-adv-cur', 'advCur'], ['#f-adv-amt', 'advAmt'],
+    ['#f-adv-ret', 'advRet'], ['#f-adv-date', 'advDate'],
   ];
   reportInputs.forEach(([sel, key]) => {
     $(sel).addEventListener('change', (e) => {

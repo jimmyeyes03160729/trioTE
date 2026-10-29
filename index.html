@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>trioTE 出差報銷懶人系統</title>
-<link rel="stylesheet" href="style.css?v=20261029f">
+<link rel="stylesheet" href="style.css?v=20261029g">
 </head>
 <body>
 <header class="topbar">
@@ -81,7 +81,7 @@
     <div class="card">
       <div class="card-title">補充說明</div>
       <div class="report-grid">
-        <div class="report-field"><span class="field-label">已預付機票款(台幣)</span><input type="number" id="f-prepaid" min="0" step="1" placeholder="沒有就留空"></div>
+        <div class="report-field"><span class="field-label">公司已訂機票(自動加總)</span><input type="text" id="f-prepaid-view" readonly title="到「4. 核銷明細」按「＋ 新增公司已訂機票」新增"></div>
         <div class="report-field"><span class="field-label">預支幣別</span><select id="f-adv-cur"></select></div>
         <div class="report-field"><span class="field-label">預支金額</span><input type="number" id="f-adv-amt" min="0" step="0.01" placeholder="沒有就留空"></div>
         <div class="report-field"><span class="field-label">已還款金額</span><input type="number" id="f-adv-ret" min="0" step="0.01"></div>
@@ -122,7 +122,8 @@
     <div class="expense-toolbar">
       <span>分類瀏覽：</span>
       <div class="cat-filter" id="cat-filter"></div>
-      <button id="btn-add-manual" class="btn primary" style="margin-left:auto">+ 手動新增一筆</button>
+      <button id="btn-add-booked" class="btn" style="margin-left:auto" title="公司訂、用自己信用卡刷，公司已匯款給你的機票">✈ 新增公司已訂機票</button>
+      <button id="btn-add-manual" class="btn primary">+ 手動新增一筆</button>
     </div>
     <div class="table-wrap">
       <table class="expense-table" id="expense-table">
@@ -155,6 +156,8 @@
     <div class="modal-head">
       <span>裁切發票</span>
       <div style="display:flex;gap:8px">
+        <button class="btn" id="btn-manual-crop" title="清除所有框，自己在圖上拖曳畫框">✂ 手動裁切</button>
+        <button class="btn" id="btn-whole" title="整張圖當成一張發票">整張</button>
         <button class="btn" id="btn-autodetect">重新自動偵測</button>
         <button class="btn" id="btn-crop-cancel">取消</button>
       </div>
@@ -175,7 +178,7 @@
 
 <div class="toast" id="toast"></div>
 
-<script src="template-spec.js?v=20261029f"></script>
-<script src="app.js?v=20261029f"></script>
+<script src="template-spec.js?v=20261029g"></script>
+<script src="app.js?v=20261029g"></script>
 </body>
 </html>

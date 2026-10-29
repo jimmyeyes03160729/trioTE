@@ -159,6 +159,10 @@ function toast(msg) {
   toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
 }
 
+// 公司已訂機票合計（台幣）：公司訂、用自己信用卡刷、公司已匯款 → 補充說明要扣掉
+function companyBookedTotal() {
+  return state.expenses.filter(e => e.companyBooked).reduce((s, e) => s + localTotalOf(e), 0);
+}
 function getRate(code) {
   const r = state.rates.find(x => x.code === code);
   return r ? num(r.rate) : 1;
@@ -247,7 +251,7 @@ function renderReport() {
   $('#f-issue').value = r.issue || '';
   $('#f-note').value = r.note || '';
   fillAdvCur();
-  $('#f-prepaid').value = r.prepaid || '';
+  $('#f-prepaid-view').value = companyBookedTotal() ? 'NTD ' + fmt(companyBookedTotal(), 0) : '（尚未新增）';
   $('#f-adv-amt').value = r.advAmt || '';
   $('#f-adv-ret').value = r.advRet || '';
   $('#f-adv-date').value = r.advDate || '';
@@ -287,6 +291,7 @@ function renderSummary() {
   const chips = [
     { lbl: '憑證張數', val: state.expenses.length + ' 張' },
     { lbl: '本幣合計', val: 'NTD ' + fmt(totalTWD) },
+    ...(companyBookedTotal() ? [{ lbl: '公司已訂機票', val: 'NTD ' + fmt(companyBookedTotal(), 0) }] : []),
   ];
   // 分類小計（本幣台幣）
   BASE_CATEGORIES.forEach(cat => {
@@ -312,6 +317,8 @@ function renderSummary() {
       warn: true,
     });
   }
+  const pv = $('#f-prepaid-view');
+  if (pv) pv.value = companyBookedTotal() ? 'NTD ' + fmt(companyBookedTotal(), 0) : '（尚未新增）';
   bar.innerHTML = chips.map(c =>
     `<div class="summary-chip"><span class="lbl">${c.lbl}</span><b style="${c.warn ? 'color:var(--danger)' : ''}">${esc(c.val)}</b></div>`
   ).join('');
@@ -353,7 +360,9 @@ function renderExpenseRow(e) {
   if (over) tr.classList.add('over-limit');
   const idx = state.expenses.indexOf(e);
 
-  const thumb = `<div class="thumb" data-img="${esc(e.imgId || '')}" style="${e.imgId ? '' : 'background-image:none;display:flex;align-items:center;justify-content:center;color:#cbd5e1'}">${e.imgId ? '' : '無圖'}</div>`;
+  const thumb = `<div class="thumb" data-img="${esc(e.imgId || '')}" style="${e.imgId ? '' : 'background-image:none;display:flex;align-items:center;justify-content:center;color:#cbd5e1'}">${e.imgId ? '' : (e.companyBooked ? '' : '無圖')}</div>`
+    + (e.companyBooked ? '<div class="booked-tag">公司已訂<br>機票</div>' : '');
+  if (e.companyBooked) tr.classList.add('booked');
 
   const cats = allCats();
   const catOpts = cats.map(c => `<option ${c === e.category ? 'selected' : ''}>${esc(c)}</option>`).join('');
@@ -445,6 +454,8 @@ async function addExpense(data) {
     trans: data.trans || '現金',
     desc: data.desc || '',
     receiptNo: data.receiptNo || '',
+    dateEnd: data.dateEnd || '',
+    companyBooked: !!data.companyBooked,
     imgId,
   };
   state.expenses.push(e);
@@ -642,9 +653,10 @@ function openCrop(uploadIdx) {
     cropImgId = u.imgId;
     cropRect = [];
     cropPending = [];
+    cropModal.classList.add('open');
+    $('.crop-stage').classList.remove('manual');
     fitCanvas();
     drawCropCanvas();
-    cropModal.classList.add('open');
     setCropGuide('正在自動偵測發票位置…');
     // 自動偵測（找不到就整張當一框）
     autoDetectRects();
@@ -660,9 +672,16 @@ function setCropGuide(msg) {
 }
 
 function fitCanvas() {
-  const maxW = 980, maxH = 560;
+  // 依裁切區實際可用空間縮放，整張圖完整顯示（不需要捲動）
+  const stage = $('.crop-stage');
+  const maxW = Math.max(200, stage.clientWidth - 24), maxH = Math.max(200, stage.clientHeight - 24);
   const scale = Math.min(maxW / cropImage.naturalWidth, maxH / cropImage.naturalHeight, 1);
+  const old = cropScale;
   cropScale = scale;
+  if (old && old !== scale && cropRect.length) { // 視窗大小改變 → 框跟著縮放
+    const k = scale / old;
+    cropRect = cropRect.map(r => ({ x: r.x * k, y: r.y * k, w: r.w * k, h: r.h * k }));
+  }
   cropCanvas.width = Math.round(cropImage.naturalWidth * scale);
   cropCanvas.height = Math.round(cropImage.naturalHeight * scale);
 }
@@ -717,10 +736,34 @@ cropCanvas.addEventListener('mouseup', () => {
       h: Math.abs(r.h),
     };
     cropRect.push(norm);
+    drawCropCanvas();
+    renderCropPreviews();
+    autoRunOCR(); // 新畫的框自動辨識
+    return;
   }
   drawCropCanvas();
   renderCropPreviews();
 });
+
+// 手動裁切：清除所有框，自己畫
+function startManualCrop() {
+  cropRect = [];
+  cropPending = [];
+  $('.crop-stage').classList.add('manual');
+  drawCropCanvas();
+  renderCropPreviews();
+  setCropGuide('手動裁切：在圖上按住滑鼠拖曳，畫出發票範圍（可畫多個框）。畫完會自動辨識。');
+}
+// 整張當一張發票
+function useWholeImage() {
+  cropRect = [{ x: 0, y: 0, w: cropCanvas.width, h: cropCanvas.height }];
+  cropPending = [];
+  $('.crop-stage').classList.remove('manual');
+  drawCropCanvas();
+  renderCropPreviews();
+  setCropGuide('已使用整張圖。');
+  autoRunOCR();
+}
 
 // 自動偵測多張發票（基於亮度分割的簡單啟發式）
 function autoDetectRects() {
@@ -738,6 +781,17 @@ function autoDetectRects() {
       const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
       grid[gy * gw + gx] = lum > 140 ? 1 : 0; // 亮區(紙張)標記
     }
+  }
+  // 圖片四邊大多是亮色 → 掃描檔、電子發票或截圖（整張就是一張發票），直接整張當一框
+  let edge = 0, edgeBright = 0;
+  for (let gx = 0; gx < gw; gx++) { edge += 2; edgeBright += grid[gx] + grid[(gh - 1) * gw + gx]; }
+  for (let gy = 0; gy < gh; gy++) { edge += 2; edgeBright += grid[gy * gw] + grid[gy * gw + gw - 1]; }
+  if (edgeBright / edge > 0.6) {
+    cropRect = [{ x: 0, y: 0, w: W, h: H }];
+    setCropGuide('偵測為單張發票（白底掃描/電子發票），已預設整張。要裁切請按「✂ 手動裁切」。');
+    drawCropCanvas();
+    renderCropPreviews();
+    return;
   }
   const visited = new Uint8Array(gw * gh);
   const comps = [];
@@ -763,20 +817,24 @@ function autoDetectRects() {
       const w = (maxx - minx + 1) * step, h = (maxy - miny + 1) * step;
       const area = w * h;
       // 過濾：面積夠大（至少 8% 畫面）且不是全畫面
-      if (area > (W * H * 0.06) && area < (W * H * 0.98)) {
+      const fill = cnt / ((maxx - minx + 1) * (maxy - miny + 1)); // 紙張應該是實心的亮區
+      if (area > (W * H * 0.06) && area < (W * H * 0.98) && fill > 0.5) {
         comps.push({ x: minx * step, y: miny * step, w, h, area });
       }
     }
   }
   comps.sort((a, b) => b.area - a.area);
-  const picked = comps.slice(0, 12);
+  // 只留最外層：在別的區塊裡面的（例如發票裡的表格格子）不算一張發票
+  const inside = (a, b) => a.x >= b.x - 8 && a.y >= b.y - 8 && a.x + a.w <= b.x + b.w + 8 && a.y + a.h <= b.y + b.h + 8;
+  const outer = comps.filter((c, i) => !comps.some((o, j) => j < i && inside(c, o)));
+  const picked = outer.slice(0, 12);
   if (picked.length) {
     cropRect = picked.map(c => ({ x: c.x, y: c.y, w: c.w, h: c.h }));
-    setCropGuide(`自動偵測到 ${picked.length} 個發票區塊。綠色框可拖曳調整，或直接重新畫框。`);
+    setCropGuide(`自動偵測到 ${picked.length} 個發票區塊。不對的話按「✂ 手動裁切」自己畫，或按「整張」。`);
   } else {
     // 找不到就整張當一框
     cropRect = [{ x: 0, y: 0, w: W, h: H }];
-    setCropGuide('未偵測到多張發票，已預設整張為一框。可在圖上拖曳畫框調整。');
+    setCropGuide('未偵測到多張發票，已預設整張為一框。要裁切請按「✂ 手動裁切」。');
   }
   drawCropCanvas();
   renderCropPreviews();
@@ -802,6 +860,7 @@ function renderCropPreviews() {
       currency: old[i] ? old[i].currency : 'NTD',
       date: old[i] ? old[i].date : (state.report.start || todayStr()),
       category: old[i] ? old[i].category : '其他',
+      ocrDone: old[i] ? !!old[i].ocrDone : false,
     };
   });
   box.innerHTML = '';
@@ -850,7 +909,23 @@ function loadTesseract() {
     document.head.appendChild(s);
   });
 }
-async function runOCR() {
+// onlyNew=true：只辨識還沒辨識過的框（畫新框時用，不覆蓋已修改的欄位）
+// 某一框辨識不到金額/幣別/日期時，改用整張圖再辨識一次補上
+let fullImageOCR = null; // { img, text } 同一張圖的整張辨識結果快取
+async function ocrText(dataURL) {
+  const result = await Tesseract.recognize(dataURL, 'chi_tra+chi_sim+eng', {});
+  return (result && result.data && result.data.text) || '';
+}
+async function wholeImageText() {
+  if (fullImageOCR && fullImageOCR.img === cropImage) return fullImageOCR.text;
+  const text = await ocrText(cropImage.src);
+  fullImageOCR = { img: cropImage, text };
+  return text;
+}
+function isWholeRect(r) {
+  return r && r.x <= 2 && r.y <= 2 && r.w >= cropCanvas.width - 4 && r.h >= cropCanvas.height - 4;
+}
+async function runOCR(onlyNew) {
   if (!cropPending.length) { toast('請先框選發票'); return; }
   const btn = $('#btn-ocr');
   const status = $('#crop-status');
@@ -860,14 +935,24 @@ async function runOCR() {
     await loadTesseract();
     for (let i = 0; i < cropPending.length; i++) {
       const p = cropPending[i];
+      if (onlyNew === true && p.ocrDone) continue;
       if (status) status.textContent = `辨識中… (${i + 1}/${cropPending.length})`;
-      const result = await Tesseract.recognize(p.dataURL, 'chi_tra+chi_sim+eng', {});
-      const text = result.data.text;
-      const parsed = parseReceipt(text);
+      let parsed = parseReceipt(await ocrText(p.dataURL));
+      if ((!parsed.amount || !parsed.currency || !parsed.date || !parsed.category) && !isWholeRect(cropRect[i])) {
+        if (status) status.textContent = `這一框資訊不足，改用整張圖辨識… (${i + 1}/${cropPending.length})`;
+        const whole = parseReceipt(await wholeImageText());
+        parsed = {
+          amount: parsed.amount || whole.amount,
+          currency: parsed.currency || whole.currency,
+          date: parsed.date || whole.date,
+          category: parsed.category || whole.category,
+        };
+      }
       if (parsed.amount) p.amount = parsed.amount;
       if (parsed.currency) p.currency = parsed.currency;
       if (parsed.date) p.date = parsed.date;
       if (parsed.category) p.category = parsed.category;
+      p.ocrDone = true;
     }
     renderCropPreviews();
     setCropGuide('辨識完成。請確認下方各張的金額、幣別、日期是否正確（可直接修改），再按「完成」。');
@@ -881,13 +966,13 @@ async function runOCR() {
   }
 }
 
-// 開啟裁切後自動執行辨識
-let autoOCRStarted = false;
+// 自動辨識（開啟裁切、畫新框時）；辨識進行中又畫了新框 → 結束後再補跑
+let autoOCRStarted = false, autoOCRAgain = false;
 async function autoRunOCR() {
-  if (autoOCRStarted) return;
+  if (autoOCRStarted) { autoOCRAgain = true; return; }
   autoOCRStarted = true;
   try {
-    await runOCR();
+    do { autoOCRAgain = false; await runOCR(true); } while (autoOCRAgain);
   } finally {
     autoOCRStarted = false;
   }
@@ -924,22 +1009,19 @@ function parseReceipt(text) {
   out.currency = detectCurrency(text);
 
   // ---------- 金額 ----------
-  // 優先：幣別符號/總計關鍵字 緊鄰的數字
-  const amtPatterns = [
-    /(?:總計|合計|共计|合计|應付|应付|实付|實付|價稅合計|价税合计|金額|金额|小计|小計|TOTAL|Total|AMOUNT|Grand\s*Total)[^\d]{0,8}([0-9][0-9,]*\.?\d{0,2})/,
-    /[¥￥]\s*([0-9][0-9,]*\.?\d{0,2})/,
-    /NT\$?\s*([0-9][0-9,]*\.?\d{0,2})/,
-    /\$\s*([0-9][0-9,]*\.?\d{0,2})/,
-    /([0-9]{1,3}(?:,[0-9]{3})+\.\d{1,2})/,
-    /([0-9]{2,7}\.\d{1,2})/,
-  ];
-  for (const re of amtPatterns) {
-    const mm = text.match(re);
-    if (mm) {
-      const v = parseFloat(mm[1].replace(/,/g, ''));
-      if (v > 0) { out.amount = v; break; }
-    }
-  }
+  // 優先順序：大陸發票(小写)/价税合计 → 總計/應付 → 最大的 ¥ 金額 → 合計/金額 → NT$ → $ → 看似金額的數字
+  const firstAmt = (re) => { const m = text.match(re); const v = m ? parseFloat(m[1].replace(/,/g, '')) : 0; return v > 0 ? v : 0; };
+  const maxAmt = (re) => { let best = 0; for (const m of text.matchAll(re)) { const v = parseFloat(m[1].replace(/,/g, '')); if (v > best) best = v; } return best; };
+  out.amount =
+    firstAmt(/[（(]\s*小\s*[写寫]\s*[)）][^\d]{0,4}([0-9][0-9,]*\.?\d{0,2})/) ||
+    firstAmt(/(?:價稅合計|价税合计)[^\d¥￥]{0,30}[¥￥]?\s*([0-9][0-9,]*\.\d{2})/) ||
+    firstAmt(/(?:總計|总计|應付|应付|實付|实付|Grand\s*Total|TOTAL|Total)[^\d]{0,8}([0-9][0-9,]*\.?\d{0,2})/) ||
+    maxAmt(/[¥￥]\s*([0-9][0-9,]*\.?\d{0,2})/g) ||
+    firstAmt(/(?:合計|合计|共计|共計|金額|金额|小计|小計|AMOUNT|Amount)[^\d]{0,8}([0-9][0-9,]*\.?\d{0,2})/) ||
+    firstAmt(/NT\$?\s*([0-9][0-9,]*\.?\d{0,2})/) ||
+    maxAmt(/\$\s*([0-9][0-9,]*\.?\d{0,2})/g) ||
+    firstAmt(/([0-9]{1,3}(?:,[0-9]{3})+\.\d{1,2})/) ||
+    firstAmt(/([0-9]{2,7}\.\d{1,2})/) || null;
   // 後備：取文字中「看似金額」的最大數字（排除 4 位數年份、日期）
   if (!out.amount) {
     const nums = [];
@@ -962,16 +1044,24 @@ function parseReceipt(text) {
 // 解析日期文字（支援西元/民國）
 function parseDateText(text) {
   if (!text) return null;
-  // 完整年/月/日
-  let m = text.match(/(\d{2,4})\s*[年\/\-\.]\s*(\d{1,2})\s*[月\/\-\.]\s*(\d{1,2})\s*日?/);
+  // 優先：有標示「開票日期 / 日期 / Date」的那個日期
+  const lab = text.match(/(?:开票日期|開票日期|交易日期|消費日期|日期|Date|DATE)\s*[:：]?\s*(\d{2,4}\s*[年\/\-\.]\s*\d{1,2}\s*[月\/\-\.]\s*\d{1,2})/);
+  if (lab && lab[1] !== text) { const d = parseDateText(lab[1]); if (d) return d; }
+  const ymd = (y, mo, d) => (mo >= 1 && mo <= 12 && d >= 1 && d <= 31)
+    ? `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}` : null;
+  let m, r;
+  // 西元 年/月/日：2026/08/31、2026年08月31日
+  m = text.match(/(\d{4})\s*[年\/\-\.]\s*(\d{1,2})\s*[月\/\-\.]\s*(\d{1,2})\s*日?/);
+  if (m && (r = ymd(+m[1], +m[2], +m[3]))) return r;
+  // 月/日/西元年（英文收據）：10/12/2026；第一個數字 > 12 就當 日/月/年
+  m = text.match(/(\d{1,2})\s*[\/\-\.]\s*(\d{1,2})\s*[\/\-\.]\s*(\d{4})/);
   if (m) {
-    let y = parseInt(m[1], 10);
-    if (y < 1912) y += 1911; // 民國年 → 西元
-    const mo = parseInt(m[2], 10), d = parseInt(m[3], 10);
-    if (mo >= 1 && mo <= 12 && d >= 1 && d <= 31) {
-      return `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-    }
+    const a = +m[1], b = +m[2];
+    if ((r = a > 12 ? ymd(+m[3], b, a) : ymd(+m[3], a, b))) return r;
   }
+  // 民國 年/月/日：113年10月28日、113/10/28
+  m = text.match(/(\d{2,3})\s*[年\/\-\.]\s*(\d{1,2})\s*[月\/\-\.]\s*(\d{1,2})\s*日?/);
+  if (m && +m[1] < 200 && (r = ymd(+m[1] + 1911, +m[2], +m[3]))) return r;
   // 純 月/日（無年）
   m = text.match(/(\d{1,2})\s*[月\/\-\.]\s*(\d{1,2})\s*日?/);
   if (m) {
@@ -1298,7 +1388,7 @@ function writeTotalsBlock(ws, r0, roles, d1, d2, allCodes, rows, count, merges) 
 // 補充說明 / 備註欄所需數字（預付機票款、預支未歸還扣款）
 function settlement(travelTotal, entTotal) {
   const r = state.report;
-  const P = Math.round(num(r.prepaid));
+  const P = Math.round(companyBookedTotal()); // 公司已訂機票（已匯款給本人）
   const cur = r.advCur || 'RMB';
   const label = cur === 'RMB' ? 'CNY' : (cur === 'NTD' ? 'TWD' : cur); // 範本寫法：CNY5,000
   const A = num(r.advAmt), R = num(r.advRet);
@@ -1376,7 +1466,11 @@ function buildMainSheet(wb, codes) {
 
   // ---- 旅費明細 ----
   const travel = sortByDate(state.expenses.filter(e => e.category !== ENT_CATEGORY));
-  const travelRows = sortByDate([...travel.filter(e => e.category !== '膳食'), ...mealSummaryRows(travel)]);
+  // 公司已訂機票放最前面（同範本第一列為機票），其餘依日期
+  const travelRows = [
+    ...travel.filter(e => e.companyBooked),
+    ...sortByDate([...travel.filter(e => e.category !== '膳食' && !e.companyBooked), ...mealSummaryRows(travel)]),
+  ];
   const ent = sortByDate(state.expenses.filter(e => e.category === ENT_CATEGORY));
   const over = mealOverLimitRows();
   const rows = [];
@@ -1468,18 +1562,19 @@ function computeDaysNum(s, e) {
 
 // ---------- 分頁結構（照公司範本）----------
 // 出差費用種類 → 1. 匯率表輸入 → 2. 出差報告暨旅費核銷明細表 → 出差日報及交際費明細
-// → 交通費憑證 → 膳食費憑證 → 膳食費發票 → 通訊費憑證 → 其他憑證拍照或掃瞄（有資料才產生）
+// → 交通費憑證 → 住宿費憑證 → 膳食費憑證 → 膳食費發票 → 通訊費憑證 → 其他憑證拍照或掃瞄（有資料才產生）
 //   膳食費憑證：依日期的膳食明細表格（只有表格）
 //   膳食費發票：膳食發票/收據照片（依日期分組）
 //   其他憑證頁：同範本，只放照片
 const COST_SHEET = '出差費用種類';
 const DAILY_SHEET = '出差日報及交際費明細';
-const RECEIPT_SHEETS = ['交通費憑證', '膳食費憑證', '通訊費憑證', '其他憑證拍照或掃瞄'];
+const RECEIPT_SHEETS = ['交通費憑證', '住宿費憑證', '膳食費憑證', '通訊費憑證', '其他憑證拍照或掃瞄'];
 const MEAL_PHOTO_SHEET = '膳食費發票';
 
 function receiptSheetFor(e) {
   if (e.category === '膳食') return '膳食費憑證';
   if (e.category === '交通') return '交通費憑證';
+  if (e.category === '住宿') return '住宿費憑證';
   const t = (e.desc || '') + (e.category || '');
   if (/電信|漫遊|漫游|通訊|通讯|通信|電話|电话|網路|网络|上網|SIM|eSIM/i.test(t)) return '通訊費憑證';
   return '其他憑證拍照或掃瞄'; // 住宿、其他、交際費、自訂類別
@@ -1837,7 +1932,7 @@ function bindEvents() {
     ['#f-fill-date', 'fillDate'], ['#f-person', 'person'], ['#f-dept', 'dept'],
     ['#f-region', 'region'], ['#f-start', 'start'], ['#f-end', 'end'],
     ['#f-focus', 'focus'], ['#f-issue', 'issue'], ['#f-note', 'note'],
-    ['#f-prepaid', 'prepaid'], ['#f-adv-cur', 'advCur'], ['#f-adv-amt', 'advAmt'],
+    ['#f-adv-cur', 'advCur'], ['#f-adv-amt', 'advAmt'],
     ['#f-adv-ret', 'advRet'], ['#f-adv-date', 'advDate'],
   ];
   reportInputs.forEach(([sel, key]) => {
@@ -1886,10 +1981,28 @@ function bindEvents() {
   // 裁切 modal
   $('#btn-crop-done').addEventListener('click', finishCrop);
   $('#btn-crop-cancel').addEventListener('click', closeCrop);
-  $('#btn-ocr').addEventListener('click', runOCR);
+  $('#btn-ocr').addEventListener('click', () => runOCR(false));
+  $('#btn-manual-crop').addEventListener('click', startManualCrop);
+  $('#btn-whole').addEventListener('click', useWholeImage);
+  // 裁切區大小一變（視窗縮放、提示文字換行）就重新縮放，確保整張圖完整顯示
+  const refit = () => { if (cropModal.classList.contains('open') && cropImage) { fitCanvas(); drawCropCanvas(); } };
+  window.addEventListener('resize', refit);
+  if (window.ResizeObserver) new ResizeObserver(refit).observe($('.crop-stage'));
   $('#btn-autodetect').addEventListener('click', () => { autoDetectRects(); autoRunOCR(); });
 
   // 手動新增
+  $('#btn-add-booked').addEventListener('click', async () => {
+    const r = state.report;
+    const e = await addExpense({
+      date: r.start || todayStr(), dateEnd: r.end || '', currency: 'NTD', amount: 0,
+      category: '交通', trans: '信用卡', desc: '機票(公司已訂)', companyBooked: true,
+    });
+    catFilter = '全部';
+    renderCatFilter(); renderExpenses();
+    const inp = document.querySelector(`#expense-body tr:nth-child(${state.expenses.indexOf(e) + 1}) input[data-k="amount"]`);
+    if (inp) { inp.focus(); inp.select(); }
+    toast('已新增公司已訂機票，請填金額（台幣）。補充說明會自動扣除這筆。');
+  });
   $('#btn-add-manual').addEventListener('click', () => {
     addExpense({ date: state.report.start || todayStr(), currency: 'NTD', amount: 0, category: '其他', trans: '現金' });
     toast('已新增一筆，請填寫金額/類別');

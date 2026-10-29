@@ -343,7 +343,13 @@ function allCats() { return [...BASE_CATEGORIES, ...state.customCategories]; }
 
 function renderExpenses() {
   const body = $('#expense-body');
-  const list = state.expenses.filter(e => catFilter === '全部' || e.category === catFilter);
+  // 公司已訂機票固定第一列，其餘依日期
+  const list = state.expenses
+    .filter(e => catFilter === '全部' || e.category === catFilter)
+    .map((e, i) => ({ e, i }))
+    .sort((a, b) => (b.e.companyBooked ? 1 : 0) - (a.e.companyBooked ? 1 : 0)
+      || String(a.e.date || '').localeCompare(String(b.e.date || '')) || a.i - b.i)
+    .map(x => x.e);
   body.innerHTML = '';
   if (!list.length) {
     body.innerHTML = '<tr><td colspan="12" style="text-align:center;color:var(--muted);padding:24px">尚無資料，可到「上傳發票」分頁上傳，或點「手動新增一筆」</td></tr>';
@@ -363,6 +369,7 @@ function renderExpenseRow(e) {
   const thumb = `<div class="thumb" data-img="${esc(e.imgId || '')}" style="${e.imgId ? '' : 'background-image:none;display:flex;align-items:center;justify-content:center;color:#cbd5e1'}">${e.imgId ? '' : (e.companyBooked ? '' : '無圖')}</div>`
     + (e.companyBooked ? '<div class="booked-tag">公司已訂<br>機票</div>' : '');
   if (e.companyBooked) tr.classList.add('booked');
+  tr.dataset.id = e.id || '';
 
   const cats = allCats();
   const catOpts = cats.map(c => `<option ${c === e.category ? 'selected' : ''}>${esc(c)}</option>`).join('');
@@ -1834,6 +1841,130 @@ function colPx(ws, ci) { // 欄寬(字元) → 約略像素
   return Math.round(w * 7 + 5);
 }
 
+// ============================================================
+// 預覽報表：用跟匯出完全相同的程式建立工作表，再畫成網頁表格
+// ============================================================
+const PV_FONT = { // 用單引號：會放進 style="..." 屬性
+  '標楷體': "'標楷體','DFKai-SB','BiauKai','Kaiti TC',serif",
+  '新細明體': "'新細明體','PMingLiU','MingLiU',serif",
+  '細明體': "'細明體','MingLiU','PMingLiU',serif",
+  '微軟正黑體': "'微軟正黑體','Microsoft JhengHei',sans-serif",
+  'Calibri': 'Calibri,Carlito,Arial,sans-serif',
+};
+function pvColor(c) { return c && c.argb ? '#' + c.argb.slice(-6) : ''; }
+function pvBorder(b) {
+  if (!b || !b.style) return '';
+  const w = { thin: '1px solid', hair: '1px solid', medium: '2px solid', thick: '3px solid', double: '3px double', dotted: '1px dotted', dashed: '1px dashed' }[b.style] || '1px solid';
+  return `${w} ${pvColor(b.color) || '#000'}`;
+}
+function pvNumber(v, f) {
+  f = f || 'General';
+  const abs = Math.abs(v);
+  const neg = v < 0;
+  const paren = /\\\(|\(#/.test(f);
+  const fix = (n, d) => n.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
+  if (/"-"\?\?/.test(f)) return v === 0 ? '-' : (neg ? '-' : '') + fix(abs, 2);  // 會計格式：0 顯示 -
+  if (/#,##0\.00/.test(f)) return neg && paren ? `(${fix(abs, 2)})` : (neg ? '-' : '') + fix(abs, 2);
+  if (/#,##0/.test(f)) return neg && paren ? `(${fix(Math.round(abs), 0)})` : (neg ? '-' : '') + fix(Math.round(abs), 0);
+  if (f === '0.###') return String(Math.round(v * 1000) / 1000);
+  if (f === '0.00') return v.toFixed(2);
+  return String(Math.round(v * 1e6) / 1e6);
+}
+function pvText(cell) {
+  let v = cell.value;
+  if (v && typeof v === 'object' && !(v instanceof Date)) {
+    if ('result' in v) v = v.result;
+    else if (v.richText) v = v.richText.map(t => t.text).join('');
+    else if ('formula' in v) v = '';
+  }
+  if (v == null || v === '') return { text: '' };
+  const f = cell.numFmt || '';
+  if (v instanceof Date) {
+    const y = v.getUTCFullYear(), m = v.getUTCMonth() + 1, d = v.getUTCDate();
+    const p2 = n => String(n).padStart(2, '0');
+    if (/m"月"d"日"/.test(f)) return { text: `${m}月${d}日` };
+    if (/yyyy\/mm\/dd/.test(f)) return { text: `${y}/${p2(m)}/${p2(d)}` };
+    return { text: `${y}/${m}/${d}` }; // 內建日期格式在中文 Excel 顯示 2026/7/17
+  }
+  if (typeof v === 'number') return { text: pvNumber(v, f), num: true, red: v < 0 && /\[Red\]/i.test(f) };
+  return { text: String(v) };
+}
+function renderSheetHTML(ws, maxCol) {
+  const esc2 = s => String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  const merges = Object.values(ws._merges || {}).map(r => r.model);
+  const master = {}, slave = new Set();
+  merges.forEach(m => {
+    master[`${m.top},${m.left}`] = m;
+    for (let r = m.top; r <= m.bottom; r++) for (let c = m.left; c <= m.right; c++) if (r !== m.top || c !== m.left) slave.add(`${r},${c}`);
+  });
+  const lastRow = ws.rowCount;
+  let html = '<table class="pv-table"><colgroup>';
+  for (let c = 1; c <= maxCol; c++) html += `<col style="width:${Math.round((ws.getColumn(c).width || 8.875) * 8 + 5)}px">`;
+  html += '</colgroup>';
+  for (let r = 1; r <= lastRow; r++) {
+    const row = ws.getRow(r);
+    const h = row.height || ws.properties.defaultRowHeight || 16.3;
+    html += `<tr style="height:${Math.round(h * 4 / 3)}px">`;
+    for (let c = 1; c <= maxCol; c++) {
+      if (slave.has(`${r},${c}`)) continue;
+      const cell = row.getCell(c);
+      const m = master[`${r},${c}`];
+      // 合併儲存格：外框取各邊實際格子的框線
+      const edge = (rr, cc) => ws.getRow(rr).getCell(cc).border || {};
+      const b = m ? {
+        top: edge(m.top, c).top, left: edge(r, m.left).left,
+        bottom: edge(m.bottom, c).bottom, right: edge(r, m.right).right,
+      } : (cell.border || {});
+      const st = [];
+      const font = cell.font || {};
+      if (font.name) st.push(`font-family:${PV_FONT[font.name] || "'" + font.name + "',serif"}`); // style 屬性用雙引號，字型名只能用單引號
+      if (font.size) st.push(`font-size:${font.size}pt`);
+      if (font.bold) st.push('font-weight:700');
+      const t = pvText(cell);
+      const fc = t.red ? '#e00' : pvColor(font.color);
+      if (fc) st.push(`color:${fc}`);
+      const al = cell.alignment || {};
+      st.push(`text-align:${al.horizontal || (t.num ? 'right' : 'left')}`);
+      st.push(`vertical-align:${{ top: 'top', middle: 'middle', bottom: 'bottom' }[al.vertical] || 'bottom'}`);
+      st.push(al.wrapText ? 'white-space:pre-wrap;word-break:break-all' : 'white-space:pre;overflow:visible');
+      if (cell.fill && cell.fill.type === 'pattern' && cell.fill.fgColor) st.push(`background:${pvColor(cell.fill.fgColor)}`);
+      ['top', 'right', 'bottom', 'left'].forEach(k => { const v = pvBorder(b[k]); if (v) st.push(`border-${k}:${v}`); });
+      const span = m ? ` rowspan="${m.bottom - m.top + 1}" colspan="${Math.min(m.right, maxCol) - m.left + 1}"` : '';
+      html += `<td${span} style="${st.join(';')}">${esc2(t.text)}</td>`;
+    }
+    html += '</tr>';
+  }
+  return html + '</table>';
+}
+async function openPreview() {
+  const btns = [$('#btn-preview'), $('#btn-preview2')];
+  btns.forEach(b => { if (b) { b.disabled = true; b.textContent = '產生中…'; } });
+  try {
+    await loadExcelJS();
+    const wb = new ExcelJS.Workbook();
+    const codes = buildRateSheet(wb);
+    buildMainSheet(wb, codes);
+    const sheets = [{ name: '出差報告暨旅費核銷明細表', ws: wb.getWorksheet(MAIN_SHEET), cols: 17 }];
+    const meals = state.expenses.filter(e => e.category === '膳食');
+    if (meals.length) { buildMealTableSheet(wb, meals); sheets.push({ name: '膳食費憑證', ws: wb.getWorksheet('膳食費憑證'), cols: 9 }); }
+    sheets.push({ name: '匯率表', ws: wb.getWorksheet(RATE_SHEET), cols: 4 });
+    const tabs = $('#pv-tabs');
+    const show = (k) => {
+      $('#pv-body').innerHTML = `<div class="pv-sheet">${renderSheetHTML(sheets[k].ws, sheets[k].cols)}</div>`;
+      tabs.querySelectorAll('button').forEach((b, i) => b.classList.toggle('on', i === k));
+    };
+    tabs.innerHTML = sheets.map(s => `<button>${esc(s.name)}</button>`).join('');
+    tabs.querySelectorAll('button').forEach((b, i) => b.addEventListener('click', () => show(i)));
+    show(0);
+    $('#preview-modal').classList.add('open');
+  } catch (err) {
+    toast('預覽失敗：' + err.message);
+    console.error(err);
+  } finally {
+    btns.forEach(b => { if (b) { b.disabled = false; b.textContent = '預覽報表'; } });
+  }
+}
+
 function exportFileName() {
   const r = state.report;
   const s = (r.start || '').replace(/-/g, ''), e = (r.end || '').replace(/-/g, '');
@@ -1841,15 +1972,122 @@ function exportFileName() {
   return `${r.person || ''}出差報告暨旅費核銷${range}.xlsx`.replace(/[\\/:*?"<>|]/g, '');
 }
 
+const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+// 產生匯出檔（下載與 Google Drive 共用，內容完全相同）
+async function buildExportBlob() {
+  await loadExcelJS();
+  const wb = await buildWorkbook();
+  const buf = await patchDefaultFont(await wb.xlsx.writeBuffer());
+  return new Blob([buf], { type: XLSX_MIME });
+}
+
+// ============================================================
+// Google Drive 預覽：上傳到自己的 Drive，用 Google 試算表開啟
+//   權限只有 drive.file（只能存取本系統自己上傳的檔案）
+//   同一份報帳再按一次會更新同一個檔案，不會一直新增
+// ============================================================
+const GOOGLE_CLIENT_ID = ''; // 也可以直接寫死在這裡，全公司共用；空白就用各自在網頁上設定的
+const GIS_URL = 'https://accounts.google.com/gsi/client';
+const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+const LS_DRIVE = 'trioTE.drive.v1'; // { clientId, files: { 檔名: fileId } }
+let driveToken = null; // { token, exp }
+
+function driveCfg() {
+  try { return JSON.parse(localStorage.getItem(LS_DRIVE)) || { files: {} }; } catch (e) { return { files: {} }; }
+}
+function saveDriveCfg(c) { try { localStorage.setItem(LS_DRIVE, JSON.stringify(c)); } catch (e) { /* 私密模式 */ } }
+function driveClientId() { return (driveCfg().clientId || GOOGLE_CLIENT_ID || '').trim(); }
+function loadGIS() {
+  if (window.google && google.accounts && google.accounts.oauth2) return Promise.resolve();
+  return new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = GIS_URL; s.async = true;
+    s.onload = () => res();
+    s.onerror = () => rej(new Error('Google 登入元件載入失敗（需要網路）'));
+    document.head.appendChild(s);
+  });
+}
+function getDriveToken() {
+  if (driveToken && driveToken.exp > Date.now()) return Promise.resolve(driveToken.token);
+  return new Promise((res, rej) => {
+    const tc = google.accounts.oauth2.initTokenClient({
+      client_id: driveClientId(),
+      scope: DRIVE_SCOPE,
+      callback: (r) => {
+        if (r.error) return rej(new Error(r.error_description || r.error));
+        driveToken = { token: r.access_token, exp: Date.now() + (Number(r.expires_in || 3600) - 60) * 1000 };
+        res(driveToken.token);
+      },
+      error_callback: (e) => rej(new Error(e && e.type === 'popup_closed' ? '已取消 Google 登入' : 'Google 登入失敗（請確認用戶端 ID 與「已授權的 JavaScript 來源」）')),
+    });
+    tc.requestAccessToken({ prompt: '' });
+  });
+}
+async function driveUpload(blob, name) {
+  const token = await getDriveToken();
+  const cfg = driveCfg();
+  cfg.files = cfg.files || {};
+  const body = () => {
+    const fd = new FormData();
+    fd.append('metadata', new Blob([JSON.stringify({ name, mimeType: XLSX_MIME })], { type: 'application/json' }));
+    fd.append('file', blob);
+    return fd;
+  };
+  const auth = { Authorization: 'Bearer ' + token };
+  let id = cfg.files[name];
+  if (id) { // 已上傳過 → 更新同一個檔案
+    const r = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=multipart&fields=id`, { method: 'PATCH', headers: auth, body: body() });
+    if (!r.ok) id = null; // 檔案被刪了 → 重新建立
+  }
+  if (!id) {
+    const r = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id', { method: 'POST', headers: auth, body: body() });
+    if (r.status === 401) { driveToken = null; throw new Error('Google 授權過期，請再按一次'); }
+    if (!r.ok) throw new Error('上傳失敗（' + r.status + '）：' + (await r.text()).slice(0, 200));
+    id = (await r.json()).id;
+  }
+  cfg.files[name] = id;
+  saveDriveCfg(cfg);
+  return id;
+}
+function showDriveSetup() {
+  $('#drive-title').textContent = 'Google Drive 預覽：第一次設定';
+  $('#drive-origin').textContent = location.origin;
+  $('#drive-client-id').value = driveClientId();
+  $('#drive-setup').style.display = '';
+  $('#drive-done').style.display = 'none';
+  $('#drive-modal').classList.add('open');
+}
+async function doDrivePreview() {
+  if (!driveClientId()) { showDriveSetup(); return; }
+  const btns = [$('#btn-drive'), $('#pv-drive')];
+  btns.forEach(b => { if (b) { b.disabled = true; b.textContent = '上傳中…'; } });
+  try {
+    await loadGIS();
+    const name = exportFileName();
+    const [blob] = await Promise.all([buildExportBlob(), getDriveToken()]); // 登入視窗與產生檔案同時進行
+    const id = await driveUpload(blob, name);
+    const url = `https://docs.google.com/spreadsheets/d/${id}/edit`;
+    const w = window.open(url, '_blank');
+    $('#drive-title').textContent = 'Google Drive 預覽';
+    $('#drive-msg').textContent = `已上傳到你的 Google Drive：${name}` + (w ? '（已在新分頁開啟）' : '');
+    $('#drive-open').href = url;
+    $('#drive-setup').style.display = 'none';
+    $('#drive-done').style.display = '';
+    $('#drive-modal').classList.add('open');
+  } catch (err) {
+    toast('Google Drive 預覽失敗：' + err.message);
+    console.error(err);
+  } finally {
+    btns.forEach(b => { if (b) { b.disabled = false; b.textContent = 'Google Drive 預覽'; } });
+  }
+}
+
 async function doExport() {
   const btn = $('#btn-export');
   btn.disabled = true;
   btn.textContent = '產生中…';
   try {
-    await loadExcelJS();
-    const wb = await buildWorkbook();
-    const buf = await patchDefaultFont(await wb.xlsx.writeBuffer());
-    downloadBlob(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), exportFileName());
+    downloadBlob(await buildExportBlob(), exportFileName());
     toast('匯出完成，資料仍在本地端');
   } catch (err) {
     toast('匯出失敗：' + err.message);
@@ -1999,10 +2237,29 @@ function bindEvents() {
     });
     catFilter = '全部';
     renderCatFilter(); renderExpenses();
-    const inp = document.querySelector(`#expense-body tr:nth-child(${state.expenses.indexOf(e) + 1}) input[data-k="amount"]`);
+    const inp = document.querySelector(`#expense-body tr[data-id="${e.id}"] input[data-k="amount"]`);
     if (inp) { inp.focus(); inp.select(); }
     toast('已新增公司已訂機票，請填金額（台幣）。補充說明會自動扣除這筆。');
   });
+  $('#btn-preview').addEventListener('click', openPreview);
+  $('#btn-drive').addEventListener('click', doDrivePreview);
+  $('#pv-drive').addEventListener('click', doDrivePreview);
+  $('#drive-close').addEventListener('click', () => $('#drive-modal').classList.remove('open'));
+  $('#drive-reset').addEventListener('click', showDriveSetup);
+  $('#drive-save').addEventListener('click', () => {
+    const id = $('#drive-client-id').value.trim();
+    if (!/\.apps\.googleusercontent\.com$/.test(id)) { toast('用戶端 ID 格式不對，應該是 …apps.googleusercontent.com 結尾'); return; }
+    const c = driveCfg(); c.clientId = id; saveDriveCfg(c);
+    driveToken = null;
+    $('#drive-modal').classList.remove('open');
+    doDrivePreview();
+  });
+  if (driveClientId()) loadGIS().catch(() => {}); // 先載好登入元件，按下去才不會被擋彈出視窗
+  $('#btn-preview2').addEventListener('click', openPreview);
+  $('#pv-close').addEventListener('click', () => $('#preview-modal').classList.remove('open'));
+  $('#pv-export').addEventListener('click', () => { $('#preview-modal').classList.remove('open'); doExport(); });
+  $('#preview-modal').addEventListener('click', (ev) => { if (ev.target.id === 'preview-modal') $('#preview-modal').classList.remove('open'); });
+  document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') $('#preview-modal').classList.remove('open'); });
   $('#btn-add-manual').addEventListener('click', () => {
     addExpense({ date: state.report.start || todayStr(), currency: 'NTD', amount: 0, category: '其他', trans: '現金' });
     toast('已新增一筆，請填寫金額/類別');

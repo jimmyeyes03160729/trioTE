@@ -4,12 +4,14 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>trioTE 出差報銷懶人系統</title>
-<link rel="stylesheet" href="style.css?v=20261029g">
+<link rel="stylesheet" href="style.css?v=20261029i">
 </head>
 <body>
 <header class="topbar">
   <div class="brand">trioTE <span>出差報銷懶人系統</span></div>
   <div class="topbar-actions">
+    <button id="btn-preview" class="btn">預覽報表</button>
+    <button id="btn-drive" class="btn" title="上傳到自己的 Google Drive，用 Google 試算表開啟預覽">Google Drive 預覽</button>
     <button id="btn-export" class="btn primary">匯出 Excel</button>
     <button id="btn-clear-all" class="btn danger">一鍵全清</button>
   </div>
@@ -122,7 +124,8 @@
     <div class="expense-toolbar">
       <span>分類瀏覽：</span>
       <div class="cat-filter" id="cat-filter"></div>
-      <button id="btn-add-booked" class="btn" style="margin-left:auto" title="公司訂、用自己信用卡刷，公司已匯款給你的機票">✈ 新增公司已訂機票</button>
+      <button id="btn-preview2" class="btn" style="margin-left:auto" title="預覽匯出後的報表，核對明細與加總">預覽報表</button>
+      <button id="btn-add-booked" class="btn" title="公司訂、用自己信用卡刷，公司已匯款給你的機票">✈ 新增公司已訂機票</button>
       <button id="btn-add-manual" class="btn primary">+ 手動新增一筆</button>
     </div>
     <div class="table-wrap">
@@ -176,9 +179,57 @@
   </div>
 </div>
 
+<!-- 預覽報表（與匯出的 Excel 相同） -->
+<div class="modal" id="preview-modal">
+  <div class="modal-box preview-box">
+    <div class="modal-head">
+      <span>預覽報表 <small style="font-weight:400;color:var(--muted)">內容與匯出的 Excel 相同，可先核對明細與加總</small></span>
+      <div style="display:flex;gap:8px;align-items:center">
+        <div class="pv-tabs" id="pv-tabs"></div>
+        <button class="btn" id="pv-drive">Google Drive 預覽</button>
+        <button class="btn primary" id="pv-export">匯出 Excel</button>
+        <button class="btn" id="pv-close">關閉</button>
+      </div>
+    </div>
+    <div class="pv-body" id="pv-body"></div>
+  </div>
+</div>
+
+<!-- Google Drive 設定 / 結果 -->
+<div class="modal" id="drive-modal">
+  <div class="modal-box drive-box">
+    <div class="modal-head">
+      <span id="drive-title">Google Drive 預覽</span>
+      <button class="btn" id="drive-close">關閉</button>
+    </div>
+    <div class="drive-body" id="drive-setup">
+      <p>第一次使用要先建立 Google 登入用的「OAuth 用戶端 ID」（免費，只要做一次）：</p>
+      <ol>
+        <li>到 <a href="https://console.cloud.google.com/" target="_blank" rel="noopener">Google Cloud Console</a> 建立一個專案。</li>
+        <li>「API 和服務 → 程式庫」搜尋 <b>Google Drive API</b> 並啟用。</li>
+        <li>「OAuth 同意畫面」選「外部」，填好名稱與 Email；「測試使用者」加入你自己的 Gmail。</li>
+        <li>「憑證 → 建立憑證 → OAuth 用戶端 ID」，類型選「網頁應用程式」，<br>「已授權的 JavaScript 來源」填：<code id="drive-origin"></code></li>
+        <li>把產生的「用戶端 ID」貼到下面儲存。</li>
+      </ol>
+      <label class="drive-field">用戶端 ID：<input id="drive-client-id" placeholder="xxxxxxxx.apps.googleusercontent.com"></label>
+      <p class="hint small">本系統只會取得「自己上傳的檔案」的權限（drive.file），看不到你 Drive 裡的其他檔案。</p>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn primary" id="drive-save">儲存並上傳</button>
+      </div>
+    </div>
+    <div class="drive-body" id="drive-done" style="display:none">
+      <p id="drive-msg"></p>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn" id="drive-reset">更換用戶端 ID</button>
+        <a class="btn primary" id="drive-open" target="_blank" rel="noopener">在 Google 試算表開啟</a>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
-<script src="template-spec.js?v=20261029g"></script>
-<script src="app.js?v=20261029g"></script>
+<script src="template-spec.js?v=20261029i"></script>
+<script src="app.js?v=20261029i"></script>
 </body>
 </html>

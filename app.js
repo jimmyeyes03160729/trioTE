@@ -360,6 +360,7 @@ function renderExpenseRow(e) {
   const curOpts = state.rates.map(r => `<option ${r.code === e.currency ? 'selected' : ''}>${esc(r.code)}</option>`).join('');
 
   tr.innerHTML = `
+    <td><button class="del" data-del="${idx}" title="刪除">✕</button></td>
     <td>${thumb}</td>
     <td><input type="date" value="${esc(e.date || '')}" data-k="date" title="開始日期"></td>
     <td><input type="date" value="${esc(e.dateEnd || '')}" data-k="dateEnd" title="結束日期（住宿、機票等跨日才需要填，空白=同開始日期）"></td>
@@ -371,7 +372,6 @@ function renderExpenseRow(e) {
     <td><select data-k="trans" title="消費方式"><option ${e.trans === '現金' ? 'selected' : ''}>現金</option><option ${e.trans === '信用卡' ? 'selected' : ''}>信用卡</option></select></td>
     <td><input value="${esc(e.desc || '')}" data-k="desc" title="說明" placeholder="說明"></td>
     <td><input value="${esc(e.receiptNo || '')}" data-k="receiptNo" title="憑證編號" style="width:90px"></td>
-    <td><button class="del" data-del="${idx}" title="刪除">✕</button></td>
   `;
 
   updateFeeCells(tr, e);
@@ -459,17 +459,68 @@ async function addExpense(data) {
 const uploadStack = $('#upload-stack');
 let uploadEntries = []; // {imgId, dataURL, width, height}
 
-async function handleFiles(files) {
-  for (const file of files) {
-    if (!file.type.startsWith('image/')) continue;
-    const dataURL = await blobToDataURL(file);
-    const imgId = uid();
-    const blob = dataURLToBlob(dataURL);
-    await idbPut(imgId, blob).catch(() => {});
-    uploadEntries.push({ imgId, dataURL });
-    renderUploadStack();
+// PDF → 每頁轉成圖片（pdf.js）
+const PDFJS_URL = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+const PDFJS_WORKER_URL = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+function isPdf(file) { return file.type === 'application/pdf' || /\.pdf$/i.test(file.name || ''); }
+async function pdfToImages(file) {
+  if (!window.pdfjsLib) {
+    await new Promise((res, rej) => {
+      const s = document.createElement('script');
+      s.src = PDFJS_URL;
+      s.onload = res;
+      s.onerror = () => rej(new Error('PDF 轉換元件載入失敗（需要網路）'));
+      document.head.appendChild(s);
+    });
   }
-  toast('圖片已加入（僅存本地端）');
+  pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL;
+  const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
+  const out = [];
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const base = page.getViewport({ scale: 1 });
+    const scale = Math.min(3, 2000 / Math.max(base.width, base.height)); // 長邊約 2000px，OCR 才看得清楚
+    const vp = page.getViewport({ scale });
+    const c = document.createElement('canvas');
+    c.width = Math.round(vp.width);
+    c.height = Math.round(vp.height);
+    const g = c.getContext('2d');
+    g.fillStyle = '#fff';
+    g.fillRect(0, 0, c.width, c.height); // PDF 透明背景補白
+    await page.render({ canvasContext: g, viewport: vp }).promise;
+    out.push(c.toDataURL('image/jpeg', 0.92));
+  }
+  return out;
+}
+async function addUploadImage(dataURL) {
+  const imgId = uid();
+  await idbPut(imgId, dataURLToBlob(dataURL)).catch(() => {});
+  uploadEntries.push({ imgId, dataURL });
+  renderUploadStack();
+}
+// 圖片、PDF 都走這裡（選檔、拖曳、Ctrl+V 貼上）
+async function handleFiles(files) {
+  let n = 0, skipped = 0;
+  for (const file of Array.from(files || [])) {
+    try {
+      if (isPdf(file)) {
+        toast(`PDF 轉換中：${file.name || ''}`);
+        const pages = await pdfToImages(file);
+        for (const u of pages) { await addUploadImage(u); n++; }
+      } else if (file.type.startsWith('image/')) {
+        await addUploadImage(await blobToDataURL(file));
+        n++;
+      } else {
+        skipped++;
+      }
+    } catch (err) {
+      console.warn(err);
+      toast(`檔案處理失敗：${file.name || ''} ${err.message}`);
+      return;
+    }
+  }
+  if (n) toast(`已加入 ${n} 張圖片（僅存本地端）`);
+  else if (skipped) toast('只支援圖片或 PDF');
 }
 
 function renderUploadStack() {
@@ -1812,6 +1863,24 @@ function bindEvents() {
     e.preventDefault();
     dz.classList.remove('drag');
     handleFiles(e.dataTransfer.files);
+  });
+  // Ctrl+V 貼上圖片 / PDF（截圖、從網頁或檔案總管複製的圖片）
+  document.addEventListener('paste', (e) => {
+    const dt = e.clipboardData;
+    if (!dt) return;
+    const files = Array.from(dt.files || []).filter(f => f.type.startsWith('image/') || isPdf(f));
+    if (!files.length) {
+      Array.from(dt.items || []).forEach(it => {
+        if (it.kind === 'file' && (it.type.startsWith('image/') || it.type === 'application/pdf')) {
+          const f = it.getAsFile();
+          if (f) files.push(f);
+        }
+      });
+    }
+    if (!files.length) return; // 一般文字貼上不攔截
+    e.preventDefault();
+    switchTab('tab-upload');
+    handleFiles(files);
   });
 
   // 裁切 modal

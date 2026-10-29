@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>trioTE 出差報銷懶人系統</title>
-<link rel="stylesheet" href="style.css?v=20261029e">
+<link rel="stylesheet" href="style.css?v=20261029f">
 </head>
 <body>
 <header class="topbar">
@@ -35,8 +35,9 @@
     </table>
     <div class="row-actions">
       <button id="btn-add-rate" class="btn">+ 新增幣別</button>
-      <label class="limit-label">每日上限(台幣)：
+      <label class="limit-label">膳食每日上限(台幣)：
         <input type="number" id="daily-limit" min="0" step="1" value="600"> 元
+        <span class="limit-note">只適用「膳食」類別；同一天膳食超過上限，匯出時自動扣回</span>
       </label>
     </div>
   </section>
@@ -96,8 +97,9 @@
     <h2>上傳發票 / 票據</h2>
     <p class="hint">上傳後會自動偵測發票並辨識金額/幣別/日期。一張照片含多張發票也會各自框出，可點圖重新裁切。確認下方明細無誤後按「完成」加入核銷明細。</p>
     <div class="dropzone" id="dropzone">
-      <input type="file" id="file-input" accept="image/*" multiple hidden>
-      <p>點此選擇圖片，或拖曳圖片到這裡</p>
+      <input type="file" id="file-input" accept="image/*,application/pdf,.pdf" multiple hidden>
+      <p>點此選擇圖片或 PDF，或拖曳到這裡</p>
+      <p class="dz-sub">也可以直接 <b>Ctrl + V</b> 貼上截圖或複製的圖片（Mac：⌘ + V）；PDF 會自動每頁轉成圖片</p>
     </div>
     <div class="upload-stack" id="upload-stack"></div>
 
@@ -126,6 +128,7 @@
       <table class="expense-table" id="expense-table">
         <thead>
           <tr>
+            <th></th>
             <th>預覽</th>
             <th>開始日期</th>
             <th>結束日期</th>
@@ -137,7 +140,6 @@
             <th>消費方式</th>
             <th>說明</th>
             <th>憑證編號</th>
-            <th></th>
           </tr>
         </thead>
         <tbody id="expense-body"></tbody>
@@ -173,7 +175,7 @@
 
 <div class="toast" id="toast"></div>
 
-<script src="template-spec.js?v=20261029e"></script>
-<script src="app.js?v=20261029e"></script>
+<script src="template-spec.js?v=20261029f"></script>
+<script src="app.js?v=20261029f"></script>
 </body>
 </html>

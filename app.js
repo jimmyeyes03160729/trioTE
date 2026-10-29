@@ -973,7 +973,6 @@ const EXCELJS_URL = 'https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/excelj
 const MAIN_SHEET = '2. 出差報告暨旅費核銷明細表';
 const RATE_SHEET = '1. 匯率表輸入';
 const DETAIL_START = 28; // 範本明細從第 28 列開始
-const CAT_SHEETS = ['電信', '機票', '住宿', '大陸高鐵', '機場交通', '交通費', '其他', '交際費'];
 
 function loadExcelJS() {
   if (window.ExcelJS) return Promise.resolve();
@@ -1289,19 +1288,23 @@ function computeDaysNum(s, e) {
   return days > 0 ? days : '';
 }
 
-// ---------- 發票圖片分頁 ----------
-// 依發票內容決定放哪個類別分頁
-function sheetNameForExpense(e) {
+// ---------- 分頁結構（照公司範本）----------
+// 出差費用種類 → 1. 匯率表輸入 → 2. 出差報告暨旅費核銷明細表 → 出差日報及交際費明細
+// → 交通費憑證 → 膳食費憑證 → 膳食費發票 → 通訊費憑證 → 其他憑證拍照或掃瞄（有資料才產生）
+//   膳食費憑證：依日期的膳食明細表格（只有表格）
+//   膳食費發票：膳食發票/收據照片（依日期分組）
+//   其他憑證頁：同範本，只放照片
+const COST_SHEET = '出差費用種類';
+const DAILY_SHEET = '出差日報及交際費明細';
+const RECEIPT_SHEETS = ['交通費憑證', '膳食費憑證', '通訊費憑證', '其他憑證拍照或掃瞄'];
+const MEAL_PHOTO_SHEET = '膳食費發票';
+
+function receiptSheetFor(e) {
+  if (e.category === '膳食') return '膳食費憑證';
+  if (e.category === '交通') return '交通費憑證';
   const t = (e.desc || '') + (e.category || '');
-  if (e.category === ENT_CATEGORY) return '交際費';
-  if (/住宿|酒店|旅館|旅馆|飯店|饭店|民宿|房費|房费/.test(t)) return '住宿';
-  if (/高鐵|高铁|火車|火车/.test(t)) return '大陸高鐵';
-  if (/計程車|出租車|出租车|接送|機場交通|机场交通|打的|滴滴/.test(t)) return '機場交通';
-  if (/電信|漫遊|通讯|通信|電話|电话|SIM/.test(t)) return '電信';
-  if (/機票|机票|航空|航班|飛行|飞行/.test(t)) return '機票';
-  if (e.category === '交通') return '交通費';
-  if (e.category === '其他') return '其他';
-  return e.category || '其他'; // 自訂類別 → 用類別名稱當分頁
+  if (/電信|漫遊|漫游|通訊|通讯|通信|電話|电话|網路|网络|上網|SIM|eSIM/i.test(t)) return '通訊費憑證';
+  return '其他憑證拍照或掃瞄'; // 住宿、其他、交際費、自訂類別
 }
 function safeSheetName(name, used) {
   let n = String(name).replace(/[\[\]:*?/\\]/g, '').slice(0, 31) || '分頁';
@@ -1311,6 +1314,233 @@ function safeSheetName(name, used) {
   used.add(n);
   return n;
 }
+function mdText(day) { return `${Number(day.slice(5, 7))}月${Number(day.slice(8, 10))}日`; }
+
+// ---------- 出差費用種類（整頁照範本）----------
+function buildCostSheet(wb) {
+  const C = window.TEMPLATE_SPEC.cost;
+  const ws = wb.addWorksheet(COST_SHEET);
+  ws.columns = C.widths.map(w => ({ width: w }));
+  C.rows.forEach((spec, i) => putRow(ws, i + 1, spec));
+  C.merges.forEach(m => ws.mergeCellsWithoutStyle(m));
+}
+
+// ---------- 出差日報及交際費明細 ----------
+// 依出差期間每天一列（客戶/產品等欄位留給業務填），當天的交際費自動帶入
+function tripDays() {
+  const r = state.report;
+  let s = r.start, e = r.end;
+  const dates = state.expenses.map(x => x.date).filter(Boolean).sort();
+  if (!s) s = dates[0];
+  if (!e) e = dates[dates.length - 1] || s;
+  if (!s) return [];
+  const out = [];
+  const d = toXlDate(s), end = toXlDate(e) || d;
+  for (let t = d.getTime(), n = 0; t <= end.getTime() && n < 120; t += 86400000, n++) {
+    out.push(new Date(t).toISOString().slice(0, 10));
+  }
+  return out;
+}
+function buildDailySheet(wb) {
+  const D = window.TEMPLATE_SPEC.daily;
+  const ws = wb.addWorksheet(DAILY_SHEET, { views: [{ zoomScale: D.zoom }] });
+  ws.columns = D.widths.map(w => ({ width: w }));
+  putRow(ws, 1, D.title);
+  putRow(ws, 2, D.head);
+  ws.mergeCellsWithoutStyle('A1:M1');
+
+  const ent = state.expenses.filter(e => e.category === ENT_CATEGORY);
+  const entLine = e => {
+    const { used } = expenseRateInfo(e);
+    return `餐費 : ${fmt(num(e.amount))} ${e.currency}*${fmt(used, 6)}= ${fmt(Math.round(num(e.amount) * used), 0)} TWD`;
+  };
+  let r = 3;
+  tripDays().forEach(day => {
+    putRow(ws, r, D.row);
+    const c = ws.getCell('B' + r);
+    c.value = toXlDate(day);
+    c.numFmt = 'm"月"d"日"';
+    const todays = ent.filter(e => e.date === day);
+    if (todays.length) {
+      ws.getCell('L' + r).value = todays.map(entLine).join('\n');
+      ws.getCell('M' + r).value = todays.map(e => e.desc || '').filter(Boolean).join('\n');
+      ws.getRow(r).height = Math.max(34, 20 * todays.length);
+    }
+    r++;
+  });
+  // 交際費總計（有交際費才產生）
+  if (ent.length) {
+    putRow(ws, r, D.total);
+    const byCur = {};
+    ent.forEach(e => {
+      const { used } = expenseRateInfo(e);
+      const k = e.currency + '|' + used;
+      byCur[k] = byCur[k] || { cur: e.currency, rate: used, amt: 0 };
+      byCur[k].amt += num(e.amount);
+    });
+    const parts = Object.values(byCur).map(x => `${fmt(x.amt)} ${x.cur}*${fmt(x.rate, 6)}`);
+    const twd = ent.reduce((s, e) => s + num(e.amount) * expenseRateInfo(e).used, 0);
+    ws.getCell('L' + r).value = `交際費總計${parts.join(' + ')}=${fmt(Math.round(twd), 0)} TWD`;
+    ws.getRow(r).height = 49.6;
+    r++;
+  }
+  ws.pageSetup = {
+    paperSize: 9, orientation: D.orientation, fitToPage: true, fitToWidth: 1, fitToHeight: 0,
+    printArea: `B1:M${Math.max(r - 1, 2)}`, margins: window.TEMPLATE_SPEC.page.margins,
+  };
+}
+
+// ---------- 憑證頁：上方明細表格，下方附發票/收據 ----------
+const RC = (() => {
+  const F = '標楷體';
+  const thin = { style: 'thin' };
+  const box = { top: thin, left: thin, bottom: thin, right: thin };
+  const yellow = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFE699' } };
+  const gray = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9D9D9' } };
+  return {
+    title: { font: { name: F, size: 14, bold: true }, alignment: { horizontal: 'center', vertical: 'middle' } },
+    head: { font: { name: F, size: 11, bold: true }, alignment: { horizontal: 'center', vertical: 'middle', wrapText: true }, border: box, fill: gray },
+    txt: { font: { name: F, size: 11 }, alignment: { vertical: 'middle', wrapText: true }, border: box },
+    ctr: { font: { name: F, size: 11 }, alignment: { horizontal: 'center', vertical: 'middle' }, border: box },
+    date: { font: { name: F, size: 11 }, alignment: { horizontal: 'center', vertical: 'middle' }, border: box, numFmt: 'yyyy/mm/dd' },
+    amt: { font: { name: 'Calibri', size: 11 }, alignment: { horizontal: 'right', vertical: 'middle' }, border: box, numFmt: '#,##0.00' },
+    calc: { font: { name: 'Calibri', size: 11 }, alignment: { horizontal: 'right', vertical: 'middle' }, border: box, numFmt: '#,##0.00', fill: yellow },
+    red: { font: { name: 'Calibri', size: 11, bold: true, color: { argb: 'FFFF0000' } }, alignment: { horizontal: 'right', vertical: 'middle' }, border: box, numFmt: '#,##0.00', fill: yellow },
+    lab: { font: { name: F, size: 11, bold: true }, alignment: { horizontal: 'right', vertical: 'middle' }, border: box, fill: gray },
+    labRed: { font: { name: F, size: 11, bold: true, color: { argb: 'FFFF0000' } }, alignment: { horizontal: 'right', vertical: 'middle' }, border: box, fill: gray },
+    section: { font: { name: F, size: 12, bold: true }, alignment: { vertical: 'middle' } },
+  };
+})();
+const RC_COLS = [{ h: '日期', w: 11.5 }, { h: '類別', w: 8 }, { h: '說明', w: 24 }, { h: '消費方式', w: 9 },
+  { h: '幣別', w: 6.5 }, { h: '金額(原幣)', w: 11.5 }, { h: '適用匯率', w: 9 }, { h: '本幣合計(NTD)', w: 13 }, { h: '憑證編號', w: 11 }];
+
+function rcPut(ws, addr, value, style) {
+  const c = ws.getCell(addr);
+  c.style = JSON.parse(JSON.stringify(style));
+  if (value !== undefined) c.value = value;
+}
+function rcItemRow(ws, r, e) {
+  const { used } = expenseRateInfo(e);
+  const local = round2(num(e.amount) * used);
+  rcPut(ws, 'A' + r, toXlDate(e.date), RC.date);
+  rcPut(ws, 'B' + r, e.category || '', RC.ctr);
+  rcPut(ws, 'C' + r, e.desc || '', RC.txt);
+  rcPut(ws, 'D' + r, e.trans || '現金', RC.ctr);
+  rcPut(ws, 'E' + r, e.currency || 'NTD', RC.ctr);
+  rcPut(ws, 'F' + r, num(e.amount), RC.amt);
+  rcPut(ws, 'G' + r, used, { ...RC.ctr, numFmt: 'General' });
+  rcPut(ws, 'H' + r, { formula: `ROUND(F${r}*G${r},2)`, result: local }, RC.calc);
+  rcPut(ws, 'I' + r, e.receiptNo || '', RC.ctr);
+  ws.getRow(r).height = (e.desc || '').length > 14 ? 32 : 20;
+  return local;
+}
+// 合計類的列：A~G 合併放標籤，H 放金額
+function rcSumRow(ws, r, label, formula, result, isRed) {
+  ws.mergeCells(`A${r}:G${r}`);
+  for (let i = 1; i <= 7; i++) rcPut(ws, colL(i) + r, i === 1 ? label : undefined, isRed ? RC.labRed : RC.lab);
+  rcPut(ws, 'H' + r, { formula, result }, isRed ? RC.red : RC.calc);
+  rcPut(ws, 'I' + r, '元', RC.ctr);
+  ws.getRow(r).height = 20;
+}
+
+// 圖片一列最多 perRow 張，放不下就換列；回傳下一個可用列(1-based)
+async function placeImageGrid(wb, ws, exps, startRow, maxW, maxH, perRow) {
+  let row0 = startRow - 1; // ExcelJS 錨點是 0-based
+  let col = 0, n = 0, tallest = 0, placed = 0;
+  for (const e of exps) {
+    if (!e.imgId) continue;
+    let info = null;
+    try { info = await imageInfo(e.imgId); } catch (err) { console.warn('圖片讀取失敗', err); }
+    if (!info) continue;
+    if (n === perRow) { row0 += Math.ceil(tallest / 20) + 1; col = 0; n = 0; tallest = 0; }
+    const s = Math.min(1, maxW / info.w, maxH / info.h);
+    const width = Math.round(info.w * s), height = Math.round(info.h * s);
+    const id = wb.addImage({ base64: info.base64, extension: info.ext });
+    ws.addImage(id, { tl: { col, row: row0 }, ext: { width, height }, editAs: 'oneCell' });
+    let px = 0;
+    while (px < width + 12) { px += colPx(ws, col); col++; }
+    tallest = Math.max(tallest, height);
+    n++; placed++;
+  }
+  return placed ? row0 + Math.ceil(tallest / 20) + 2 : startRow;
+}
+
+// 膳食費憑證：依日期分組的明細表格，每天小計，超過每日上限加一列扣回
+function buildMealTableSheet(wb, list) {
+  const ws = wb.addWorksheet('膳食費憑證');
+  ws.columns = RC_COLS.map(c => ({ width: c.w }));
+  ws.pageSetup = { paperSize: 9, orientation: 'portrait', fitToPage: true, fitToWidth: 1, fitToHeight: 0,
+    margins: window.TEMPLATE_SPEC.page.margins };
+  ws.views = [{ state: 'frozen', ySplit: 2 }];
+  ws.mergeCells('A1:I1');
+  rcPut(ws, 'A1', '膳食費明細（依日期）', RC.title);
+  ws.getRow(1).height = 26;
+  RC_COLS.forEach((c, i) => rcPut(ws, colL(i + 1) + '2', c.h, RC.head));
+  ws.getRow(2).height = 30;
+
+  const limit = num(state.dailyLimit);
+  const sorted = sortByDate(list);
+  const sumRefs = []; let grand = 0; let r = 3;
+  [...new Set(sorted.map(e => e.date || ''))].forEach(day => {
+    const first = r; let dayTotal = 0;
+    sorted.filter(e => (e.date || '') === day).forEach(e => { dayTotal += rcItemRow(ws, r, e); r++; });
+    dayTotal = round2(dayTotal);
+    rcSumRow(ws, r, (day ? mdText(day) : '未填日期') + `　小計（每日上限 ${fmt(limit, 0)} 元）`, `SUM(H${first}:H${r - 1})`, dayTotal);
+    sumRefs.push('H' + r); grand += dayTotal; r++;
+    if (day && dayTotal > limit) {
+      const over = round2(dayTotal - limit);
+      rcSumRow(ws, r, `${mdText(day)}　超限扣回`, `-(H${r - 1}-${limit})`, -over, true);
+      sumRefs.push('H' + r); grand -= over; r++;
+    }
+  });
+  rcSumRow(ws, r, '膳食費合計（已扣除超限）', sumRefs.join('+') || '0', round2(grand));
+}
+
+// 照片頁：只放發票/收據照片。byDate=true 時每天先放一列日期標題
+async function buildPhotoSheet(wb, name, list, byDate) {
+  const withImg = sortByDate(list).filter(e => e.imgId);
+  if (!withImg.length) return;
+  const ws = wb.addWorksheet(name);
+  if (!byDate) { await placeImageGrid(wb, ws, withImg, 1, 300, 520, 3); return; }
+  let r = 1;
+  for (const day of [...new Set(withImg.map(e => e.date || ''))]) {
+    const c = ws.getCell('A' + r);
+    c.value = day ? mdText(day) : '未填日期';
+    c.style = { font: { name: '標楷體', size: 12, bold: true }, alignment: { vertical: 'middle' } };
+    r = await placeImageGrid(wb, ws, withImg.filter(e => (e.date || '') === day), r + 1, 300, 520, 3);
+  }
+}
+
+async function buildReceiptSheets(wb) {
+  const groups = {};
+  state.expenses.forEach(e => { const n = receiptSheetFor(e); (groups[n] = groups[n] || []).push(e); });
+  for (const n of RECEIPT_SHEETS) {
+    const list = groups[n] || [];
+    if (!list.length) continue;
+    if (n === '膳食費憑證') {
+      buildMealTableSheet(wb, list);
+      await buildPhotoSheet(wb, MEAL_PHOTO_SHEET, list, true);
+    } else {
+      await buildPhotoSheet(wb, n, list, false);
+    }
+  }
+}
+
+async function buildWorkbook() {
+  if (!window.TEMPLATE_SPEC) throw new Error('找不到 template-spec.js');
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'trioTE';
+  wb.calcProperties.fullCalcOnLoad = true; // 開檔時重算公式
+  buildCostSheet(wb);
+  const codes = buildRateSheet(wb);
+  buildMainSheet(wb, codes);
+  buildDailySheet(wb);
+  await buildReceiptSheets(wb);
+  // 開檔時停在主表
+  wb.views = [{ activeTab: 2, firstSheet: 0, visibility: 'visible' }];
+  return wb;
+}
+
 async function imageInfo(imgId) {
   const blob = await idbGet(imgId);
   if (!blob) return null;
@@ -1326,131 +1556,9 @@ async function imageInfo(imgId) {
   const ext = /png/i.test(blob.type) ? 'png' : (/gif/i.test(blob.type) ? 'gif' : 'jpeg');
   return { base64: dataURL.split(',')[1], ext, w, h };
 }
-// 圖片由左到右排列（同實際報帳單的排法），回傳放了幾張
 function colPx(ws, ci) { // 欄寬(字元) → 約略像素
   const w = (ws.getColumn(ci + 1).width) || 8.43;
   return Math.round(w * 7 + 5);
-}
-async function placeImages(wb, ws, exps, topRow, maxW, maxH) {
-  let col = 0, placed = 0;
-  for (const e of exps) {
-    if (!e.imgId) continue;
-    let info = null;
-    try { info = await imageInfo(e.imgId); } catch (err) { console.warn('圖片讀取失敗', err); }
-    if (!info) continue;
-    const s = Math.min(1, maxW / info.w, maxH / info.h);
-    const width = Math.round(info.w * s), height = Math.round(info.h * s);
-    const id = wb.addImage({ base64: info.base64, extension: info.ext });
-    ws.addImage(id, { tl: { col, row: topRow }, ext: { width, height }, editAs: 'oneCell' });
-    let px = 0; // 往右推進到能放下這張圖的欄
-    while (px < width + 12) { px += colPx(ws, col); col++; }
-    placed++;
-  }
-  return placed;
-}
-
-async function buildImageSheets(wb) {
-  const used = new Set([RATE_SHEET, MAIN_SHEET]);
-  // 類別分頁（非膳食）：只有有圖片的類別才建立
-  const catMap = {};
-  sortByDate(state.expenses).forEach(e => {
-    if (e.category === '膳食' || !e.imgId) return;
-    const n = sheetNameForExpense(e);
-    (catMap[n] = catMap[n] || []).push(e);
-  });
-  const names = [...CAT_SHEETS.filter(n => catMap[n]), ...Object.keys(catMap).filter(n => !CAT_SHEETS.includes(n))];
-  for (const n of names) {
-    const ws = wb.addWorksheet(safeSheetName(n, used));
-    await placeImages(wb, ws, catMap[n], 0, 600, 800);
-  }
-  // 膳食每日分頁：上方明細表格，下方附發票/收據圖片
-  const byDay = {};
-  state.expenses.forEach(e => { if (e.category === '膳食' && e.date) (byDay[e.date] = byDay[e.date] || []).push(e); });
-  for (const day of Object.keys(byDay).sort()) {
-    const ws = wb.addWorksheet(safeSheetName('膳食' + day.replace(/-/g, '').slice(4), used));
-    const tableEnd = writeMealTable(ws, day, byDay[day]);
-    const imgs = byDay[day].filter(e => e.imgId);
-    if (imgs.length) {
-      const r = tableEnd + 2;
-      const c = ws.getCell('A' + r);
-      c.value = '發票／收據';
-      c.style = { font: { name: '標楷體', size: 12, bold: true }, alignment: { vertical: 'middle' } };
-      await placeImages(wb, ws, imgs, r, 330, 600); // r 為 0-based → 標題下一列開始
-    }
-  }
-}
-
-// 膳食明細表（樣式沿用主表：標楷體、細框線、灰底表頭、淺黃公式格）
-function writeMealTable(ws, day, list) {
-  const F = '標楷體';
-  const thin = { style: 'thin' };
-  const box = { top: thin, left: thin, bottom: thin, right: thin };
-  const ACC = '_-* #,##0.00_-;\\-* #,##0.00_-;_-* "-"??_-;_-@_-';
-  const head = { font: { name: F, size: 11, bold: true }, alignment: { horizontal: 'center', vertical: 'middle', wrapText: true }, border: box, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9D9D9' } } };
-  const txt = { font: { name: F, size: 11 }, alignment: { vertical: 'middle', wrapText: true }, border: box };
-  const ctr = { font: { name: F, size: 11 }, alignment: { horizontal: 'center', vertical: 'middle' }, border: box };
-  const amt = { font: { name: 'Calibri', size: 11 }, alignment: { horizontal: 'right', vertical: 'middle' }, border: box, numFmt: ACC };
-  const fml = { ...amt, numFmt: '#,##0', fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFE699' } } };
-  const put = (addr, v, st) => { const c = ws.getCell(addr); c.style = JSON.parse(JSON.stringify(st)); if (v !== undefined) c.value = v; };
-
-  ws.columns = [12, 26, 10, 7, 12, 10, 13, 12].map(w => ({ width: w }));
-  ws.pageSetup = { paperSize: 9, orientation: 'portrait', fitToPage: true, fitToWidth: 1, fitToHeight: 0,
-    margins: window.TEMPLATE_SPEC.page.margins };
-
-  // 標題
-  ws.mergeCells('A1:H1');
-  put('A1', `膳食費明細　${Number(day.slice(5, 7))}月${Number(day.slice(8, 10))}日`, { font: { name: F, size: 14, bold: true }, alignment: { horizontal: 'center', vertical: 'middle' } });
-  ws.getRow(1).height = 26;
-
-  const heads = ['日期', '說明', '消費方式', '幣別', '金額(原幣)', '適用匯率', '本幣合計(NTD)', '憑證編號'];
-  heads.forEach((h, i) => put(colL(i + 1) + '2', h, head));
-  ws.getRow(2).height = 32;
-
-  let r = 3, total = 0;
-  list.forEach(e => {
-    const { used } = expenseRateInfo(e);
-    const local = num(e.amount) * used;
-    total += local;
-    put('A' + r, toXlDate(e.date), { ...ctr, numFmt: 'yyyy/mm/dd' });
-    put('B' + r, e.desc || '', txt);
-    put('C' + r, e.trans || '現金', ctr);
-    put('D' + r, e.currency || 'NTD', ctr);
-    put('E' + r, num(e.amount), amt);
-    put('F' + r, used, { ...ctr, numFmt: 'General' });
-    put('G' + r, undefined, fml);
-    ws.getCell('G' + r).value = { formula: `ROUND(E${r}*F${r},2)`, result: round2(local) };
-    ws.getCell('G' + r).numFmt = '#,##0.00';
-    put('H' + r, e.receiptNo || '', ctr);
-    ws.getRow(r).height = 20;
-    r++;
-  });
-  const first = 3, last = r - 1;
-  const limit = num(state.dailyLimit);
-  const lab = { ...head, alignment: { horizontal: 'right', vertical: 'middle' } };
-  const sumRow = (label, formula, result, red) => {
-    ws.mergeCells(`A${r}:F${r}`);
-    for (let i = 1; i <= 6; i++) put(colL(i) + r, i === 1 ? label : undefined, lab);
-    put('G' + r, undefined, red ? { ...fml, numFmt: '#,##0.00', font: { name: 'Calibri', size: 11, bold: true, color: { argb: 'FFFF0000' } } } : { ...fml, numFmt: '#,##0.00' });
-    ws.getCell('G' + r).value = { formula, result };
-    put('H' + r, '元', ctr);
-    ws.getRow(r).height = 20;
-    return r++;
-  };
-  const rt = sumRow('當日膳食合計', `SUM(G${first}:G${last})`, round2(total));
-  const rl = sumRow('每日上限', `${limit}`, limit);
-  sumRow('超限扣回', `MAX(0,G${rt}-G${rl})`, round2(Math.max(0, total - limit)), true);
-  return r - 1;
-}
-
-async function buildWorkbook() {
-  if (!window.TEMPLATE_SPEC) throw new Error('找不到 template-spec.js');
-  const wb = new ExcelJS.Workbook();
-  wb.creator = 'trioTE';
-  wb.calcProperties.fullCalcOnLoad = true; // 開檔時重算公式
-  const codes = buildRateSheet(wb);
-  buildMainSheet(wb, codes);
-  await buildImageSheets(wb);
-  return wb;
 }
 
 function exportFileName() {

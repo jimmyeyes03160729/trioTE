@@ -83,7 +83,9 @@ h2{margin:0 0 6px;font-size:18px}
 .cat-filter button{border:1px solid var(--line);background:#fff;padding:5px 12px;border-radius:20px;cursor:pointer;font-size:12px}
 .cat-filter button.active{background:var(--accent);color:#fff;border-color:var(--accent)}
 .table-wrap{overflow-x:auto;background:#fff;border:1px solid var(--line);border-radius:var(--radius)}
-.expense-table{border-collapse:collapse;width:100%;min-width:1100px}
+.expense-table{border-collapse:collapse;width:100%;min-width:1240px}
+.expense-table select[data-k="currency"]{min-width:72px}
+.expense-table select[data-k="category"]{min-width:84px}
 .expense-table th{background:#f0f4ff;padding:8px;font-size:12px;border-bottom:1px solid var(--line);white-space:nowrap}
 .expense-table td{padding:6px 8px;border-bottom:1px solid #eef0f3;font-size:13px;vertical-align:middle}
 .expense-table tr.over-limit td{background:#fef2f2}

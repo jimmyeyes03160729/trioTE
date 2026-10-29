@@ -6,7 +6,8 @@
    ============================================================ */
 
 // ---------- 常數 ----------
-const BASE_CATEGORIES = ['交通', '住宿', '膳食', '其他'];
+const BASE_CATEGORIES = ['交通', '住宿', '膳食', '其他', '交際費'];
+const ENT_CATEGORY = '交際費'; // 交際費：匯出到範本下方「交際費」區塊
 const COMPANIES = [
   '三集瑞科技集團', '塞席爾商三集瑞', '三積瑞科技蘇州', '東莞德泰利電子',
   'TRIO INT.', 'APEC', 'TRIO Seychelles', 'Wonstar',
@@ -141,8 +142,8 @@ function num(v) { const n = parseFloat(v); return isNaN(n) ? 0 : n; }
 function round6(v) { return Math.round((num(v) + Number.EPSILON) * 1000000) / 1000000; }
 function round2(v) { return Math.round((num(v) + Number.EPSILON) * 100) / 100; }
 function fmt(n, d) {
-  if (d == null) d = (Math.abs(n) % 1 !== 0) ? 2 : 0;
-  return Number(n || 0).toLocaleString('zh-Hant', { minimumFractionDigits: 0, maximumFractionDigits: 6 });
+  if (d == null) d = 2;
+  return Number(n || 0).toLocaleString('zh-Hant', { minimumFractionDigits: 0, maximumFractionDigits: d });
 }
 let toastTimer = null;
 function toast(msg) {
@@ -159,6 +160,7 @@ function getRate(code) {
 }
 function localTotalOf(exp) { return round6(num(exp.amount) * num(exp.rate || getRate(exp.currency))); }
 function catToFeeCol(cat) {
+  if (cat === ENT_CATEGORY) return '其他費用';
   if (BASE_CATEGORIES.includes(cat)) return cat + '費';
   return '其他費用';
 }
@@ -272,7 +274,7 @@ function renderSummary() {
   // 分類小計（本幣台幣）
   BASE_CATEGORIES.forEach(cat => {
     const t = state.expenses.filter(e => e.category === cat).reduce((s, e) => s + localTotalOf(e), 0);
-    if (t > 0) chips.push({ lbl: cat + '費', val: fmt(t) });
+    if (t > 0) chips.push({ lbl: cat.endsWith('費') ? cat : cat + '費', val: fmt(t) });
   });
   state.customCategories.forEach(cat => {
     const t = state.expenses.filter(e => e.category === cat).reduce((s, e) => s + localTotalOf(e), 0);
@@ -320,7 +322,7 @@ function renderExpenses() {
   const list = state.expenses.filter(e => catFilter === '全部' || e.category === catFilter);
   body.innerHTML = '';
   if (!list.length) {
-    body.innerHTML = '<tr><td colspan="11" style="text-align:center;color:var(--muted);padding:24px">尚無資料，可到「上傳發票」分頁上傳，或點「手動新增一筆」</td></tr>';
+    body.innerHTML = '<tr><td colspan="12" style="text-align:center;color:var(--muted);padding:24px">尚無資料，可到「上傳發票」分頁上傳，或點「手動新增一筆」</td></tr>';
     return;
   }
   list.forEach(e => {
@@ -342,7 +344,8 @@ function renderExpenseRow(e) {
 
   tr.innerHTML = `
     <td>${thumb}</td>
-    <td><input type="date" value="${esc(e.date || '')}" data-k="date" title="日期"></td>
+    <td><input type="date" value="${esc(e.date || '')}" data-k="date" title="開始日期"></td>
+    <td><input type="date" value="${esc(e.dateEnd || '')}" data-k="dateEnd" title="結束日期（住宿、機票等跨日才需要填，空白=同開始日期）"></td>
     <td><select data-k="currency" title="幣別">${curOpts}</select></td>
     <td><select data-k="category" title="類別">${catOpts}</select></td>
     <td><input type="number" step="0.01" class="num" value="${e.amount}" data-k="amount" title="金額(原幣)"></td>
@@ -959,244 +962,324 @@ function openImagePreview(imgId) {
 }
 
 // ============================================================
-// 匯出 Excel（SheetJS，對齊範本格式）
+// 匯出 Excel（ExcelJS + template-spec.js：樣式逐格取自公司範本）
+//   - 字型/框線/底色/列高/欄寬/合併/數字格式/列印設定 全部照範本
+//   - 適用匯率、本幣合計、合計天數、幣別彙總 寫成範本同款公式
+//   - 消費方式、幣別 下拉選單
+//   - 交際費：有資料才產生範本下方的交際費區塊
+//   - 發票圖片嵌入 類別分頁 / 膳食每日分頁
 // ============================================================
-function loadXLSX() {
-  if (window.XLSX) return Promise.resolve();
+const EXCELJS_URL = 'https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js';
+const MAIN_SHEET = '2. 出差報告暨旅費核銷明細表';
+const RATE_SHEET = '1. 匯率表輸入';
+const DETAIL_START = 28; // 範本明細從第 28 列開始
+const CAT_SHEETS = ['電信', '機票', '住宿', '大陸高鐵', '機場交通', '交通費', '其他', '交際費'];
+
+function loadExcelJS() {
+  if (window.ExcelJS) return Promise.resolve();
   return new Promise((res, rej) => {
     const s = document.createElement('script');
-    s.src = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
+    s.src = EXCELJS_URL;
     s.onload = () => res();
-    s.onerror = () => rej(new Error('SheetJS CDN 載入失敗'));
+    s.onerror = () => rej(new Error('ExcelJS 載入失敗（需要網路）'));
     document.head.appendChild(s);
   });
 }
 
-const XLSX_STYLE = {
-  title: { font: { sz: 20, bold: true, name: '微軟正黑體' }, alignment: { horizontal: 'center', vertical: 'center' } },
-  header: { font: { bold: true }, alignment: { horizontal: 'center', vertical: 'center' }, fill: { fgColor: { rgb: 'FFF2CC' } }, border: thinBorder() },
-  cell: { border: thinBorder(), alignment: { vertical: 'center' } },
-  center: { alignment: { horizontal: 'center', vertical: 'center' }, border: thinBorder() },
-};
-function thinBorder() {
-  return { top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' } };
+// ---------- 小工具 ----------
+function colL(i) { // 1 → A
+  let s = '';
+  while (i > 0) { const m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = Math.floor((i - 1) / 26); }
+  return s;
+}
+function tplStyle(id) { return JSON.parse(JSON.stringify(window.TEMPLATE_SPEC.styles[id])); }
+function toXlDate(str) { // 'YYYY-MM-DD' → UTC Date（避免時區位移）
+  if (!str) return null;
+  const [y, m, d] = String(str).split('-').map(Number);
+  if (!y || !m || !d) return null;
+  return new Date(Date.UTC(y, m - 1, d));
+}
+// 依範本某列的樣式/固定文字鋪一列（只鋪樣式與「元」等固定字；資料另外填）
+function putRow(ws, r, spec, height) {
+  const row = ws.getRow(r);
+  row.height = height || spec.h || undefined;
+  spec.cells.forEach(([sid, v], i) => {
+    const c = row.getCell(i + 1);
+    c.style = tplStyle(sid);
+    if (v != null) c.value = v;
+  });
+}
+function setV(ws, addr, value) { ws.getCell(addr).value = value; }
+function setF(ws, addr, formula, result) {
+  ws.getCell(addr).value = (result === undefined) ? { formula } : { formula, result };
 }
 
-function buildWorkbook() {
-  const wb = XLSX.utils.book_new();
-
-  // ---- 1. 匯率表輸入 ----
-  const wsRate = XLSX.utils.aoa_to_sheet([]);
-  wsRate['!cols'] = [{ wch: 14 }, { wch: 25 }, { wch: 9 }, { wch: 11 }, { wch: 9 }];
-  setCell(wsRate, 'A1', '幣別\n(可自行增列)', XLSX_STYLE.header);
-  setCell(wsRate, 'B1', '報銷匯率\n(請向會計確認)\n非出納提供借支匯率', XLSX_STYLE.header);
-  setCell(wsRate, 'D1', '消費模式\n(請勿異動)', XLSX_STYLE.header);
-  wsRate['!merges'] = wsRate['!merges'] || [];
-  state.rates.forEach((r, i) => {
-    const row = i + 2;
-    setCell(wsRate, addr(1, row), r.code, XLSX_STYLE.center);
-    setCell(wsRate, addr(2, row), r.code === 'NTD' ? 1 : num(r.rate), XLSX_STYLE.cell);
-  });
-  setCell(wsRate, 'D2', '現金', XLSX_STYLE.cell);
-  setCell(wsRate, 'D3', '信用卡', XLSX_STYLE.cell);
-  XLSX.utils.book_append_sheet(wb, wsRate, '1. 匯率表輸入');
-
-  // ---- 2. 出差報告暨旅費核銷明細表 ----
-  const ws = XLSX.utils.aoa_to_sheet([]);
-  buildReportSheet(ws);
-  XLSX.utils.book_append_sheet(wb, ws, '2. 出差報告暨旅費核銷明細表');
-
-  // ---- 膳食每日分頁 ----
-  const mealByDay = groupByDay('膳食');
-  Object.keys(mealByDay).sort().forEach(day => {
-    const dayName = '膳食' + day.replace(/-/g, '').slice(4); // 0717
-    const wsDay = XLSX.utils.aoa_to_sheet([]);
-    wsDay['!cols'] = [{ wch: 14 }, { wch: 14 }, { wch: 14 }];
-    setDateCell(wsDay, 'A2', day);
-    const total = mealByDay[day].reduce((s, e) => s + num(e.amount), 0);
-    setCell(wsDay, 'B35', total, { numFmt: '0.00' });
-    // 圖片
-    embedImages(wsDay, mealByDay[day]);
-    XLSX.utils.book_append_sheet(wb, wsDay, dayName);
-  });
-
-  // ---- 類別分頁（非膳食，放對應發票圖）----
-  const catSheetDefs = ['電信', '機票', '住宿', '大陸高鐵', '機場交通'];
-  const catMap = {};
-  catSheetDefs.forEach(name => catMap[name] = []);
+// ---------- 資料整理 ----------
+function expenseRateInfo(e) {
+  const table = getRate(e.currency);
+  const used = num(e.rate) || table;
+  return { table, used, custom: Math.abs(used - table) > 1e-9 };
+}
+function sortByDate(list) {
+  return list.slice().sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
+}
+function mealOverLimitRows() {
+  const dayMeals = {};
   state.expenses.forEach(e => {
-    if (e.category === '膳食') return;
-    const name = sheetNameForExpense(e);
-    if (catMap[name]) catMap[name].push(e);
-    else catMap['機票'].push(e);
+    if (e.category !== '膳食' || !e.date) return;
+    dayMeals[e.date] = (dayMeals[e.date] || 0) + localTotalOf(e);
   });
-  catSheetDefs.forEach(name => {
-    const wsCat = XLSX.utils.aoa_to_sheet([]);
-    wsCat['!cols'] = [{ wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 14 }];
-    embedImages(wsCat, catMap[name]);
-    XLSX.utils.book_append_sheet(wb, wsCat, name);
+  const limit = num(state.dailyLimit);
+  return Object.keys(dayMeals).sort()
+    .filter(d => dayMeals[d] > limit)
+    .map(d => ({ date: d, excess: round2(dayMeals[d] - limit), limit }));
+}
+function currencyCodes() {
+  const out = [];
+  state.rates.forEach(r => { const c = String(r.code || '').trim(); if (c && !out.includes(c)) out.push(c); });
+  state.expenses.forEach(e => { if (e.currency && !out.includes(e.currency)) out.push(e.currency); });
+  return out;
+}
+
+// ---------- 1. 匯率表輸入 ----------
+function buildRateSheet(wb) {
+  const R = window.TEMPLATE_SPEC.rate;
+  const ws = wb.addWorksheet(RATE_SHEET, { properties: { defaultColWidth: 8.875, defaultRowHeight: 17 } });
+  ws.columns = R.widths.map(w => ({ width: w }));
+  putRow(ws, 1, R.header);
+  const codes = currencyCodes();
+  codes.forEach((code, i) => {
+    const r = i + 2;
+    const row = ws.getRow(r);
+    [1, 2].forEach(ci => { row.getCell(ci).style = tplStyle(R.row.cells[ci - 1][0]); });
+    row.getCell(1).value = code;
+    row.getCell(2).value = code === 'NTD' ? 1 : getRate(code);
   });
-
-  return wb;
+  // 消費模式（範本 D2:D3，主表下拉選單參照這裡）
+  ['現金', '信用卡'].forEach((t, i) => {
+    const c = ws.getCell('D' + (i + 2));
+    c.style = tplStyle(R.row.cells[3][0]);
+    c.value = t;
+  });
+  return codes;
 }
 
-// 依發票內容決定放哪個類別分頁
-function sheetNameForExpense(e) {
-  const t = ((e.desc || '') + (e.category || ''));
-  if (/住宿|酒店|旅館|旅馆|飯店|饭店|民宿|房費|房费/.test(t)) return '住宿';
-  if (/高鐵|高铁|火車|火车/.test(t)) return '大陸高鐵';
-  if (/計程車|出租車|出租车|接送|機場交通|机场交通|打的|滴滴/.test(t)) return '機場交通';
-  if (/電信|漫遊|通讯|通信|電話|电话|SIM/.test(t)) return '電信';
-  if (/機票|机票|航空|航班|飛行|飞行/.test(t)) return '機票';
-  return (e.category === '交通') ? '機票' : '機票';
+// ---------- 2. 主表 ----------
+function companyLine() {
+  const m = (n) => (state.report.company === n) ? '■' : '□';
+  return `       ${m('三集瑞科技集團')}三集瑞科技集團  ${m('塞席爾商三集瑞')}塞席爾商三集瑞  ${m('三積瑞科技蘇州')}三積瑞科技蘇州  ${m('東莞德泰利電子')}東莞德泰利電子\n` +
+         `       ${m('TRIO INT.')}TRIO INT.       ${m('APEC')}APEC            ${m('TRIO Seychelles')}TRIO Seychelles ${m('Wonstar')}Wonstar`;
 }
 
-function addr(colIdx, row) {
-  return XLSX.utils.encode_cell({ c: colIdx - 1, r: row - 1 });
+function rateFormula(r) {
+  const ref = `'${RATE_SHEET}'`;
+  return `IF(C${r}="","",IF(C${r}="信用卡",IFERROR(ROUND(N${r}/SUM(F${r}:M${r}),6),""),` +
+    `IF(_xlfn.XLOOKUP(D${r},${ref}!A:A,${ref}!B:B,"")="","請至1.匯率表輸入",_xlfn.XLOOKUP(D${r},${ref}!A:A,${ref}!B:B,""))))`;
 }
-function setCell(ws, ref, value, style) {
-  XLSX.utils.sheet_add_aoa(ws, [[value]], { origin: ref });
-  if (style) {
-    const c = ws[ref];
-    if (c) c.s = style;
+
+// 寫一筆明細列；回傳該列本幣（供彙總快取值）
+function writeDetailRow(ws, r, spec, e, dv) {
+  const desc = e.desc || '';
+  putRow(ws, r, spec, desc.length > 12 ? 26.5 : undefined);
+  const { used, custom } = expenseRateInfo(e);
+  const fees = [0, 0, 0, 0];
+  fees[catToIndex(e.category)] = num(e.amount);
+  const local = num(e.amount) * used;
+
+  const d1 = toXlDate(e.date), d2 = toXlDate(e.dateEnd || e.date);
+  if (d1) setV(ws, 'A' + r, d1);
+  if (d2) setV(ws, 'B' + r, d2);
+  setV(ws, 'C' + r, e.trans || '現金');
+  setV(ws, 'D' + r, e.currency || 'NTD');
+  ['F', 'H', 'J', 'L'].forEach((c, i) => setV(ws, c + r, fees[i]));
+
+  if (e.trans === '信用卡') {
+    // 範本：信用卡填實際刷卡台幣，適用匯率反推
+    setV(ws, 'N' + r, local);
+    setF(ws, 'E' + r, rateFormula(r), round6(used));
+  } else {
+    if (custom) setV(ws, 'E' + r, used); // 手動改過匯率 → 寫死數值
+    else setF(ws, 'E' + r, rateFormula(r), used);
+    setF(ws, 'N' + r, `E${r}*(F${r}+H${r}+J${r}+L${r})`, local);
   }
-}
-function merge(ws, range) {
-  if (!ws['!merges']) ws['!merges'] = [];
-  ws['!merges'].push(XLSX.utils.decode_range(range));
+  setV(ws, 'P' + r, desc);
+  setV(ws, 'Q' + r, e.receiptNo || '');
+  Object.assign(dv, { [r]: true });
+  return { cur: e.currency || 'NTD', local, orig: num(e.amount) };
 }
 
-function groupByDay(cat) {
-  const map = {};
-  state.expenses.forEach(e => {
-    if (e.category !== cat || !e.date) return;
-    (map[e.date] = map[e.date] || []).push(e);
+function writeDeductRow(ws, r, spec, o, dv) {
+  putRow(ws, r, spec);
+  const d = toXlDate(o.date);
+  if (d) { setV(ws, 'A' + r, d); setV(ws, 'B' + r, d); }
+  setV(ws, 'C' + r, '現金');
+  setV(ws, 'D' + r, 'NTD');
+  setF(ws, 'E' + r, rateFormula(r), 1);
+  setV(ws, 'F' + r, 0); setV(ws, 'H' + r, -o.excess); setV(ws, 'J' + r, 0); setV(ws, 'L' + r, 0);
+  setF(ws, 'N' + r, `E${r}*(F${r}+H${r}+J${r}+L${r})`, -o.excess);
+  setV(ws, 'P' + r, `膳食超限扣回(每日上限${fmt(o.limit, 0)}元)`);
+  dv[r] = true;
+  return { cur: 'NTD', local: -o.excess, orig: -o.excess };
+}
+
+// 檢附憑證/幣別彙總區（範本 42~48 列；交際費 58~62 列同結構）
+function writeTotalsBlock(ws, r0, roles, d1, d2, allCodes, rows, count, merges) {
+  const T = window.TEMPLATE_SPEC.roles;
+  // 只列出這一區實際有用到的幣別（依匯率表順序）；完全沒資料時保留 NTD 一列
+  const usedCur = new Set(rows.map(x => x.cur));
+  let codes = allCodes.filter(c => usedCur.has(c));
+  if (!codes.length) codes = ['NTD'];
+  const k = codes.length;
+  putRow(ws, r0, T[roles.head]);
+  setV(ws, 'B' + r0, `${count} 張`);
+  merges.push(`D${r0}:E${r0}`, `F${r0}:G${r0}`, `H${r0}:I${r0}`, `J${r0}:O${r0}`);
+
+  const D = `$D$${d1}:$D$${d2}`;
+  const sums = {};
+  codes.forEach((c, i) => {
+    const r = r0 + 1 + i;
+    const role = i === 0 ? roles.first : (i === k - 1 ? roles.last : roles.mid);
+    putRow(ws, r, T[role]);
+    merges.push(`D${r}:E${r}`);
+    setV(ws, 'D' + r, c);
+    const its = rows.filter(x => x.cur === c);
+    const orig = its.reduce((s, x) => s + x.orig, 0);
+    const loc = Math.round(its.reduce((s, x) => s + x.local, 0));
+    sums[c] = loc;
+    setF(ws, 'F' + r,
+      `SUM(SUMIF(${D},$D${r},$H$${d1}:$H$${d2}),SUMIF(${D},$D${r},$J$${d1}:$J$${d2}),SUMIF(${D},$D${r},$L$${d1}:$L$${d2}),SUMIF(${D},$D${r},$F$${d1}:$F$${d2}))`,
+      round2(orig));
+    setF(ws, 'H' + r, `IFERROR(ROUND(SUMIF(${D},D${r},$N$${d1}:$N$${d2}),0),"錯誤")`, loc);
   });
-  return map;
+  // 備註欄合併：第一個幣別一格、其餘合併成一大格（同範本 J43:O43 / J44:O47）
+  if (k >= 1) merges.push(`J${r0 + 1}:O${r0 + 1}`);
+  if (k >= 2) merges.push(`J${r0 + 2}:O${r0 + k}`);
+
+  const rs = r0 + k + 1;
+  putRow(ws, rs, T[roles.sum]);
+  const total = Object.values(sums).reduce((s, v) => s + v, 0);
+  setF(ws, 'F' + rs, `SUM(H${r0 + 1}:H${r0 + k})`, total);
+  merges.push(`D${rs}:E${rs}`, `F${rs}:H${rs}`, `J${rs}:O${rs}`);
+  // 左側 檢附憑證 / 張數 / 旅費總計 直向合併
+  merges.push(`A${r0}:A${rs}`, `B${r0}:B${rs}`, `C${r0}:C${rs}`);
+  return { sumRow: rs, next: rs + 1, total };
 }
 
-function embedImages(ws, exps) {
-  const imgs = [];
-  exps.forEach((e, i) => {
-    if (!e.imgId) return;
-    // 非同步無法在此等待；改為先收集，於 export 前補
-    imgs.push({ e, idx: i });
-  });
-  ws.__pendingImgs = imgs;
-}
-
-async function embedImagesAsync(ws) {
-  const pending = ws.__pendingImgs || [];
-  const images = [];
-  for (let i = 0; i < pending.length; i++) {
-    const { e } = pending[i];
-    const blob = await idbGet(e.imgId);
-    if (!blob) continue;
-    const b64 = await blobToBase64(blob);
-    images.push({
-      name: 'img' + i,
-      data: b64,
-      opts: { type: e.imgId && blob.type.includes('png') ? 'png' : 'jpeg', position: { type: 'twoCellAnchor', from: { col: 1, row: 3 + i * 12 }, to: { col: 2, row: 10 + i * 12 } } },
-    });
+function suppText(travelTotal, entTotal, hasEnt, over) {
+  const lines = [];
+  lines.push(`差旅費報銷，台幣${fmt(travelTotal, 0)}元。`);
+  if (over.length) {
+    const t = over.reduce((s, o) => s + o.excess, 0);
+    lines.push(`膳食費每日上限台幣${fmt(state.dailyLimit, 0)}元，超限共台幣${fmt(t, 0)}元已於明細扣回。`);
   }
-  if (images.length) ws['!images'] = images;
-}
-function blobToBase64(blob) {
-  return new Promise((res, rej) => {
-    const fr = new FileReader();
-    fr.onload = () => res(fr.result.split(',')[1]);
-    fr.onerror = rej;
-    fr.readAsDataURL(blob);
-  });
+  if (hasEnt) {
+    lines.push(`交際費報銷，台幣${fmt(entTotal, 0)}元。`);
+    lines.push(`請款合計台幣${fmt(travelTotal + entTotal, 0)}元。`);
+  }
+  String(state.report.note || '').split('\n').map(s => s.trim()).filter(Boolean).forEach(s => lines.push(s));
+  return lines.map((s, i) => `${i + 1}.${s}`).join('\n');
 }
 
-function buildReportSheet(ws) {
+function buildMainSheet(wb, codes) {
+  const S = window.TEMPLATE_SPEC;
+  const T = S.roles;
   const r = state.report;
-  // 欄寬
-  ws['!cols'] = [
-    { wch: 9.9 }, { wch: 5.9 }, { wch: 5.9 }, { wch: 5.9 }, { wch: 9.9 },
-    { wch: 10.4 }, { wch: 3.1 }, { wch: 7.9 }, { wch: 3.1 }, { wch: 7.9 },
-    { wch: 3.1 }, { wch: 7.9 }, { wch: 3.1 }, { wch: 7.9 }, { wch: 3.1 },
-    { wch: 8.9 }, { wch: 8.9 },
-  ];
+  const ws = wb.addWorksheet(MAIN_SHEET, { properties: { defaultColWidth: 8.875, defaultRowHeight: 16.3 } });
+  ws.columns = S.widths.map(w => ({ width: w }));
+  const merges = S.headerMerges.slice();
+  const dvRows = {};
 
-  // 公司勾選列
-  const coMark = (name) => (r.company === name) ? '■' : '□';
-  const line1 = `       ${coMark('三集瑞科技集團')}三集瑞科技集團  ${coMark('塞席爾商三集瑞')}塞席爾商三集瑞  ${coMark('三積瑞科技蘇州')}三積瑞科技蘇州  ${coMark('東莞德泰利電子')}東莞德泰利電子`;
-  const line2 = `       ${coMark('TRIO INT.')}TRIO INT.       ${coMark('APEC')}APEC            ${coMark('TRIO Seychelles')}TRIO Seychelles ${coMark('Wonstar')}Wonstar`;
-  setCell(ws, 'A1', line1 + '\n' + line2, { font: { sz: 10 }, alignment: { vertical: 'center' } });
-  merge(ws, 'A1:O1');
-
-  setCell(ws, 'A2', '出差報告暨旅費核銷明細表', XLSX_STYLE.title);
-  merge(ws, 'A2:O2');
-
-  setCell(ws, 'A3', `□國內　■${r.tripType}`, { alignment: { vertical: 'center' } });
-  merge(ws, 'A3:E3');
-  setCell(ws, 'F3', '填寫日期', { alignment: { horizontal: 'right' } });
-  merge(ws, 'F3:G3');
-  setDateCell(ws, 'H3', r.fillDate);
-  merge(ws, 'H3:O3');
-  setCell(ws, 'A4', '出差人員');
-  setCell(ws, 'B4', r.person || '', {});
-  merge(ws, 'B4:E4');
-  setCell(ws, 'F4', '部門名稱');
-  merge(ws, 'F4:G4');
-  setCell(ws, 'H4', r.dept || '');
-  merge(ws, 'H4:O4');
-
-  setCell(ws, 'A5', '出差地區');
-  setCell(ws, 'B5', r.region || '');
-  merge(ws, 'B5:O5');
-
-  setCell(ws, 'A6', '出差期間');
-  setCell(ws, 'B6', '開始日期');
-  setDateCell(ws, 'C6', r.start);
-  merge(ws, 'C6:D6');
-  setCell(ws, 'E6', '結束日期');
-  setDateCell(ws, 'F6', r.end);
-  merge(ws, 'F6:I6');  setCell(ws, 'J6', '合計天數');
-  merge(ws, 'J6:K6');
+  // ---- 表頭 1~27 列（樣式 + 固定標籤直接取自範本）----
+  S.header.forEach((spec, i) => putRow(ws, i + 1, spec));
+  setV(ws, 'A1', companyLine());
+  setV(ws, 'A3', (r.tripType === '國內' ? '■國內　□國外' : '□國內　■國外') + '　'.repeat(11) + ' '.repeat(23));
+  const fd = toXlDate(r.fillDate); if (fd) setV(ws, 'H3', fd);
+  setV(ws, 'B4', r.person || '');
+  setV(ws, 'H4', r.dept || '');
+  setV(ws, 'B5', r.region || '');
+  const sd = toXlDate(r.start), ed = toXlDate(r.end);
+  if (sd) setV(ws, 'C6', sd);
+  if (ed) setV(ws, 'F6', ed);
   const days = computeDaysNum(r.start, r.end);
-  setCell(ws, 'L6', days, { alignment: { horizontal: 'center' } });
-  merge(ws, 'L6:O6');
+  setF(ws, 'L6', 'IF(AND(C6<>"",F6<>""),_xlfn.DAYS(F6,C6)+1,"")', days === '' ? '' : days);
+  setV(ws, 'A9', r.focus || '');
+  setV(ws, 'A16', r.issue || '');
 
-  setCell(ws, 'A7', '出差報告', { font: { bold: true } });
-  merge(ws, 'A7:O7');
-  setCell(ws, 'A8', '出差執行重點：', { font: { bold: true } });
-  merge(ws, 'A8:O8');
-  setCell(ws, 'A9', r.focus || '', { alignment: { wrapText: true, vertical: 'top' } });
-  merge(ws, 'A9:O14');
-  setCell(ws, 'A15', '問題整理及建議事項:', { font: { bold: true } });
-  merge(ws, 'A15:O15');
-  setCell(ws, 'A16', r.issue || '', { alignment: { wrapText: true, vertical: 'top' } });
-  merge(ws, 'A16:O25');
+  // ---- 旅費明細 ----
+  const travel = sortByDate(state.expenses.filter(e => e.category !== ENT_CATEGORY));
+  const ent = sortByDate(state.expenses.filter(e => e.category === ENT_CATEGORY));
+  const over = mealOverLimitRows();
+  const rows = [];
+  let row = DETAIL_START;
+  travel.forEach(e => { rows.push(writeDetailRow(ws, row, T.detail, e, dvRows)); row++; });
+  over.forEach(o => { rows.push(writeDeductRow(ws, row, T.deduct, o, dvRows)); row++; });
+  if (row === DETAIL_START) { putRow(ws, row, T.detail); dvRows[row] = true; row++; } // 至少留一列空白明細
+  const d1 = DETAIL_START, d2 = row - 1;
 
-  // ---- 旅費核銷明細 ----
-  setCell(ws, 'A26', '旅費核銷明細', { font: { bold: true } });
-  merge(ws, 'A26:O26');
-  const heads = ['開始日期', '結束日期', '消費方式', '幣別', '適用匯率', '交通費', '', '膳食費', '', '住宿費', '', '其他費用', '', '本幣合計', '', '說明', '憑証編號'];
-  heads.forEach((h, i) => {
-    if (h) setCell(ws, addr(i + 1, 27), h, XLSX_STYLE.header);
+  // 小計
+  putRow(ws, row, T.subtotal);
+  setF(ws, 'N' + row, `SUM(N${d1}:N${d2})`, rows.reduce((s, x) => s + x.local, 0));
+  merges.push(`L${row}:M${row}`);
+  row++;
+
+  // 檢附憑證 / 旅費總計
+  const tot = writeTotalsBlock(ws, row,
+    { head: 'totHead', first: 'totFirst', mid: 'totMid', last: 'totLast', sum: 'totSum' },
+    d1, d2, codes, rows, travel.length, merges);
+  row = tot.next;
+
+  // 使用備註 / 補充說明 / 使用備註
+  const noteRow1 = row, suppRow = row + 1, noteRow2 = row + 2;
+  putRow(ws, noteRow1, T.note1);
+  putRow(ws, suppRow, T.supp);
+  putRow(ws, noteRow2, T.note2);
+  merges.push(`B${noteRow1}:O${noteRow1}`, `B${suppRow}:O${suppRow}`, `B${noteRow2}:O${noteRow2}`);
+  row = noteRow2 + 1;
+
+  // ---- 交際費（有資料才產生）----
+  let entTotal = 0;
+  if (ent.length) {
+    putRow(ws, row, T.gap); row++;
+    putRow(ws, row, T.entTitle);
+    merges.push(`A${row}:O${row}`);
+    row++;
+    const e1 = row;
+    const entRows = [];
+    ent.forEach(e => { entRows.push(writeDetailRow(ws, row, T.entDetail, e, dvRows)); row++; });
+    const e2 = row - 1;
+    const entTot = writeTotalsBlock(ws, row,
+      { head: 'entHead', first: 'entFirst', mid: 'entMid', last: 'entLast', sum: 'entSum' },
+      e1, e2, codes, entRows, ent.length, merges);
+    entTotal = entTot.total;
+    row = entTot.next;
+    putRow(ws, row, T.grand);
+    setF(ws, 'F' + row, `F${entTot.sumRow}+F${tot.sumRow}`, tot.total + entTotal);
+    merges.push(`A${row}:E${row}`, `F${row}:H${row}`, `J${row}:O${row}`);
+    row++;
+  }
+  setV(ws, 'B' + suppRow, suppText(tot.total, entTotal, ent.length > 0, over));
+  const lastRow = row - 1;
+
+  // 合併（不覆蓋各格樣式，保留範本框線）
+  merges.forEach(m => ws.mergeCellsWithoutStyle(m));
+
+  // 下拉選單（同範本：消費方式→匯率表 D2:D3；幣別→匯率表 A 欄）
+  const curRange = `'${RATE_SHEET}'!$A$2:$A$${codes.length + 1}`;
+  Object.keys(dvRows).forEach(r2 => {
+    ws.getCell('C' + r2).dataValidation = {
+      type: 'list', allowBlank: true, formulae: [`'${RATE_SHEET}'!$D$2:$D$3`],
+      showErrorMessage: true, errorStyle: 'warning', error: '請挑選下拉式選單，以利匯率自動代入。',
+    };
+    ws.getCell('D' + r2).dataValidation = { type: 'list', allowBlank: true, formulae: [curRange], showErrorMessage: true };
   });
-  merge(ws, 'F27:G27'); merge(ws, 'H27:I27'); merge(ws, 'J27:K27'); merge(ws, 'L27:M27'); merge(ws, 'N27:O27');
 
-  // 資料列
-  const rows = state.expenses;
-  let rIdx = 28;
-  rows.forEach(e => {
-    writeExpenseRow(ws, rIdx, e);
-    rIdx++;
-  });
-  // 膳食超限扣回列
-  const overRows = mealOverLimitRows();
-  overRows.forEach(o => {
-    writeOverLimitRow(ws, rIdx, o);
-    rIdx++;
-  });
-
-  // 旅費總計區
-  const sumStart = 28, sumEnd = rIdx - 1;
-  writeTotalSection(ws, rIdx, sumStart, sumEnd);
+  // 列印設定（A4 直印、縮放、邊界、列印範圍同範本）
+  const P = S.page;
+  ws.pageSetup = {
+    paperSize: P.paperSize, orientation: P.orientation, scale: P.scale, fitToPage: false,
+    margins: P.margins, printArea: `A1:P${lastRow}`,
+  };
+  return ws;
 }
 
 function computeDaysNum(s, e) {
@@ -1205,124 +1288,176 @@ function computeDaysNum(s, e) {
   const days = Math.round((d2 - d1) / 86400000) + 1;
   return days > 0 ? days : '';
 }
-// 將 'YYYY-MM-DD' 轉為 Excel 日期序號
-function dateSerial(str) {
-  if (!str) return null;
-  const [y, m, d] = String(str).split('-').map(Number);
-  if (!y || !m || !d) return null;
-  return Math.round(Date.UTC(y, m - 1, d) / 86400000) + 25569;
+
+// ---------- 發票圖片分頁 ----------
+// 依發票內容決定放哪個類別分頁
+function sheetNameForExpense(e) {
+  const t = (e.desc || '') + (e.category || '');
+  if (e.category === ENT_CATEGORY) return '交際費';
+  if (/住宿|酒店|旅館|旅馆|飯店|饭店|民宿|房費|房费/.test(t)) return '住宿';
+  if (/高鐵|高铁|火車|火车/.test(t)) return '大陸高鐵';
+  if (/計程車|出租車|出租车|接送|機場交通|机场交通|打的|滴滴/.test(t)) return '機場交通';
+  if (/電信|漫遊|通讯|通信|電話|电话|SIM/.test(t)) return '電信';
+  if (/機票|机票|航空|航班|飛行|飞行/.test(t)) return '機票';
+  if (e.category === '交通') return '交通費';
+  if (e.category === '其他') return '其他';
+  return e.category || '其他'; // 自訂類別 → 用類別名稱當分頁
 }
-function setDateCell(ws, ref, str) {
-  const serial = dateSerial(str);
-  if (serial == null) { setCell(ws, ref, '', XLSX_STYLE.center); return; }
-  setCell(ws, ref, serial, { numFmt: 'yyyy/mm/dd', alignment: { horizontal: 'center', vertical: 'center' }, border: thinBorder() });
+function safeSheetName(name, used) {
+  let n = String(name).replace(/[\[\]:*?/\\]/g, '').slice(0, 31) || '分頁';
+  let k = 2;
+  const base = n;
+  while (used.has(n)) n = (base.slice(0, 28) + '_' + (k++));
+  used.add(n);
+  return n;
+}
+async function imageInfo(imgId) {
+  const blob = await idbGet(imgId);
+  if (!blob) return null;
+  const dataURL = await blobToDataURL(blob);
+  let w = 0, h = 0;
+  try {
+    const bmp = await createImageBitmap(blob);
+    w = bmp.width; h = bmp.height; bmp.close && bmp.close();
+  } catch (err) {
+    await new Promise(res => { const im = new Image(); im.onload = () => { w = im.naturalWidth; h = im.naturalHeight; res(); }; im.onerror = res; im.src = dataURL; });
+  }
+  if (!w || !h) return null;
+  const ext = /png/i.test(blob.type) ? 'png' : (/gif/i.test(blob.type) ? 'gif' : 'jpeg');
+  return { base64: dataURL.split(',')[1], ext, w, h };
+}
+// 圖片由左到右排列（同實際報帳單的排法），回傳放了幾張
+function colPx(ws, ci) { // 欄寬(字元) → 約略像素
+  const w = (ws.getColumn(ci + 1).width) || 8.43;
+  return Math.round(w * 7 + 5);
+}
+async function placeImages(wb, ws, exps, topRow, maxW, maxH) {
+  let col = 0, placed = 0;
+  for (const e of exps) {
+    if (!e.imgId) continue;
+    let info = null;
+    try { info = await imageInfo(e.imgId); } catch (err) { console.warn('圖片讀取失敗', err); }
+    if (!info) continue;
+    const s = Math.min(1, maxW / info.w, maxH / info.h);
+    const width = Math.round(info.w * s), height = Math.round(info.h * s);
+    const id = wb.addImage({ base64: info.base64, extension: info.ext });
+    ws.addImage(id, { tl: { col, row: topRow }, ext: { width, height }, editAs: 'oneCell' });
+    let px = 0; // 往右推進到能放下這張圖的欄
+    while (px < width + 12) { px += colPx(ws, col); col++; }
+    placed++;
+  }
+  return placed;
 }
 
-function writeExpenseRow(ws, rIdx, e) {
-  const local = localTotalOf(e);
-  const fi = catToIndex(e.category);
-  setDateCell(ws, addr(1, rIdx), e.date);
-  setDateCell(ws, addr(2, rIdx), e.date);
-  setCell(ws, addr(3, rIdx), e.trans || '現金', XLSX_STYLE.center);
-  setCell(ws, addr(4, rIdx), e.currency, XLSX_STYLE.center);
-  setCell(ws, addr(5, rIdx), num(e.rate || getRate(e.currency)), { numFmt: '0.0000', alignment: { horizontal: 'center' } });
-  const fees = [0, 0, 0, 0];
-  fees[fi] = num(e.amount);
-  setCell(ws, addr(6, rIdx), fees[0] ? fees[0] : '', { numFmt: '0.00', alignment: { horizontal: 'right' } });
-  setCell(ws, addr(7, rIdx), fees[0] ? '元' : '');
-  setCell(ws, addr(8, rIdx), fees[1] ? fees[1] : '', { numFmt: '0.00', alignment: { horizontal: 'right' } });
-  setCell(ws, addr(9, rIdx), fees[1] ? '元' : '');
-  setCell(ws, addr(10, rIdx), fees[2] ? fees[2] : '', { numFmt: '0.00', alignment: { horizontal: 'right' } });
-  setCell(ws, addr(11, rIdx), fees[2] ? '元' : '');
-  setCell(ws, addr(12, rIdx), fees[3] ? fees[3] : '', { numFmt: '0.00', alignment: { horizontal: 'right' } });
-  setCell(ws, addr(13, rIdx), fees[3] ? '元' : '');
-  setCell(ws, addr(14, rIdx), local, { numFmt: '0.00', alignment: { horizontal: 'right' } });
-  setCell(ws, addr(15, rIdx), '元');
-  setCell(ws, addr(16, rIdx), e.desc || '', {});
-  setCell(ws, addr(17, rIdx), e.receiptNo || '', XLSX_STYLE.center);
-}
-
-function mealOverLimitRows() {
-  const dayMeals = {};
-  state.expenses.forEach(e => {
-    if (e.category !== '膳食' || !e.date) return;
-    dayMeals[e.date] = (dayMeals[e.date] || 0) + localTotalOf(e);
+async function buildImageSheets(wb) {
+  const used = new Set([RATE_SHEET, MAIN_SHEET]);
+  // 類別分頁（非膳食）：只有有圖片的類別才建立
+  const catMap = {};
+  sortByDate(state.expenses).forEach(e => {
+    if (e.category === '膳食' || !e.imgId) return;
+    const n = sheetNameForExpense(e);
+    (catMap[n] = catMap[n] || []).push(e);
   });
-  const out = [];
-  Object.entries(dayMeals).forEach(([d, t]) => {
-    const limit = num(state.dailyLimit);
-    if (t > limit) out.push({ date: d, excess: t - limit, limit });
+  const names = [...CAT_SHEETS.filter(n => catMap[n]), ...Object.keys(catMap).filter(n => !CAT_SHEETS.includes(n))];
+  for (const n of names) {
+    const ws = wb.addWorksheet(safeSheetName(n, used));
+    await placeImages(wb, ws, catMap[n], 0, 600, 800);
+  }
+  // 膳食每日分頁：上方明細表格，下方附發票/收據圖片
+  const byDay = {};
+  state.expenses.forEach(e => { if (e.category === '膳食' && e.date) (byDay[e.date] = byDay[e.date] || []).push(e); });
+  for (const day of Object.keys(byDay).sort()) {
+    const ws = wb.addWorksheet(safeSheetName('膳食' + day.replace(/-/g, '').slice(4), used));
+    const tableEnd = writeMealTable(ws, day, byDay[day]);
+    const imgs = byDay[day].filter(e => e.imgId);
+    if (imgs.length) {
+      const r = tableEnd + 2;
+      const c = ws.getCell('A' + r);
+      c.value = '發票／收據';
+      c.style = { font: { name: '標楷體', size: 12, bold: true }, alignment: { vertical: 'middle' } };
+      await placeImages(wb, ws, imgs, r, 330, 600); // r 為 0-based → 標題下一列開始
+    }
+  }
+}
+
+// 膳食明細表（樣式沿用主表：標楷體、細框線、灰底表頭、淺黃公式格）
+function writeMealTable(ws, day, list) {
+  const F = '標楷體';
+  const thin = { style: 'thin' };
+  const box = { top: thin, left: thin, bottom: thin, right: thin };
+  const ACC = '_-* #,##0.00_-;\\-* #,##0.00_-;_-* "-"??_-;_-@_-';
+  const head = { font: { name: F, size: 11, bold: true }, alignment: { horizontal: 'center', vertical: 'middle', wrapText: true }, border: box, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9D9D9' } } };
+  const txt = { font: { name: F, size: 11 }, alignment: { vertical: 'middle', wrapText: true }, border: box };
+  const ctr = { font: { name: F, size: 11 }, alignment: { horizontal: 'center', vertical: 'middle' }, border: box };
+  const amt = { font: { name: 'Calibri', size: 11 }, alignment: { horizontal: 'right', vertical: 'middle' }, border: box, numFmt: ACC };
+  const fml = { ...amt, numFmt: '#,##0', fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFE699' } } };
+  const put = (addr, v, st) => { const c = ws.getCell(addr); c.style = JSON.parse(JSON.stringify(st)); if (v !== undefined) c.value = v; };
+
+  ws.columns = [12, 26, 10, 7, 12, 10, 13, 12].map(w => ({ width: w }));
+  ws.pageSetup = { paperSize: 9, orientation: 'portrait', fitToPage: true, fitToWidth: 1, fitToHeight: 0,
+    margins: window.TEMPLATE_SPEC.page.margins };
+
+  // 標題
+  ws.mergeCells('A1:H1');
+  put('A1', `膳食費明細　${Number(day.slice(5, 7))}月${Number(day.slice(8, 10))}日`, { font: { name: F, size: 14, bold: true }, alignment: { horizontal: 'center', vertical: 'middle' } });
+  ws.getRow(1).height = 26;
+
+  const heads = ['日期', '說明', '消費方式', '幣別', '金額(原幣)', '適用匯率', '本幣合計(NTD)', '憑證編號'];
+  heads.forEach((h, i) => put(colL(i + 1) + '2', h, head));
+  ws.getRow(2).height = 32;
+
+  let r = 3, total = 0;
+  list.forEach(e => {
+    const { used } = expenseRateInfo(e);
+    const local = num(e.amount) * used;
+    total += local;
+    put('A' + r, toXlDate(e.date), { ...ctr, numFmt: 'yyyy/mm/dd' });
+    put('B' + r, e.desc || '', txt);
+    put('C' + r, e.trans || '現金', ctr);
+    put('D' + r, e.currency || 'NTD', ctr);
+    put('E' + r, num(e.amount), amt);
+    put('F' + r, used, { ...ctr, numFmt: 'General' });
+    put('G' + r, undefined, fml);
+    ws.getCell('G' + r).value = { formula: `ROUND(E${r}*F${r},2)`, result: round2(local) };
+    ws.getCell('G' + r).numFmt = '#,##0.00';
+    put('H' + r, e.receiptNo || '', ctr);
+    ws.getRow(r).height = 20;
+    r++;
   });
-  return out;
+  const first = 3, last = r - 1;
+  const limit = num(state.dailyLimit);
+  const lab = { ...head, alignment: { horizontal: 'right', vertical: 'middle' } };
+  const sumRow = (label, formula, result, red) => {
+    ws.mergeCells(`A${r}:F${r}`);
+    for (let i = 1; i <= 6; i++) put(colL(i) + r, i === 1 ? label : undefined, lab);
+    put('G' + r, undefined, red ? { ...fml, numFmt: '#,##0.00', font: { name: 'Calibri', size: 11, bold: true, color: { argb: 'FFFF0000' } } } : { ...fml, numFmt: '#,##0.00' });
+    ws.getCell('G' + r).value = { formula, result };
+    put('H' + r, '元', ctr);
+    ws.getRow(r).height = 20;
+    return r++;
+  };
+  const rt = sumRow('當日膳食合計', `SUM(G${first}:G${last})`, round2(total));
+  const rl = sumRow('每日上限', `${limit}`, limit);
+  sumRow('超限扣回', `MAX(0,G${rt}-G${rl})`, round2(Math.max(0, total - limit)), true);
+  return r - 1;
 }
 
-function writeOverLimitRow(ws, rIdx, o) {
-  setDateCell(ws, addr(1, rIdx), o.date);
-  setDateCell(ws, addr(2, rIdx), o.date);
-  setCell(ws, addr(3, rIdx), '現金', XLSX_STYLE.center);
-  setCell(ws, addr(4, rIdx), 'NTD', XLSX_STYLE.center);
-  setCell(ws, addr(5, rIdx), 1, { numFmt: '0.0000', alignment: { horizontal: 'center' } });
-  setCell(ws, addr(14, rIdx), -o.excess, { numFmt: '0.00', alignment: { horizontal: 'right' } });
-  setCell(ws, addr(15, rIdx), '元');
-  setCell(ws, addr(16, rIdx), `膳食超限(每日${fmt(o.limit)}元)`, {});
+async function buildWorkbook() {
+  if (!window.TEMPLATE_SPEC) throw new Error('找不到 template-spec.js');
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'trioTE';
+  wb.calcProperties.fullCalcOnLoad = true; // 開檔時重算公式
+  const codes = buildRateSheet(wb);
+  buildMainSheet(wb, codes);
+  await buildImageSheets(wb);
+  return wb;
 }
 
-function writeTotalSection(ws, rIdx, sumStart, sumEnd) {
-  // 檢附憑證 / 旅費總計
-  const totalRow = rIdx + 1; // 留一空白列
-  const cur = [];
-  state.rates.forEach(r => cur.push(r.code));
-  const byCur = {};
-  cur.forEach(c => byCur[c] = 0);
-  state.expenses.forEach(e => { byCur[e.currency] = (byCur[e.currency] || 0) + num(e.amount); });
-  const byCurTWD = {};
-  state.expenses.forEach(e => { byCurTWD[e.currency] = (byCurTWD[e.currency] || 0) + localTotalOf(e); });
-
-  const titleR = totalRow;
-  setCell(ws, addr(1, titleR), '檢附憑證', { font: { bold: true } });
-  setCell(ws, addr(2, titleR), state.expenses.length + ' 張');
-  setCell(ws, addr(3, titleR), '旅費總計', { font: { bold: true } });
-  setCell(ws, addr(4, titleR), '幣別', XLSX_STYLE.header);
-  setCell(ws, addr(6, titleR), '原幣總計', XLSX_STYLE.header);
-  setCell(ws, addr(8, titleR), '本幣金額', XLSX_STYLE.header);
-  setCell(ws, addr(10, titleR), '備註', XLSX_STYLE.header);
-
-  let rr = titleR + 1;
-  Object.keys(byCur).forEach(c => {
-    setCell(ws, addr(4, rr), c, XLSX_STYLE.center);
-    setCell(ws, addr(6, rr), byCur[c], { numFmt: '0.00', alignment: { horizontal: 'right' } });
-    setCell(ws, addr(7, rr), '元');
-    const twd = byCurTWD[c] || 0;
-    setCell(ws, addr(8, rr), c === 'NTD' ? byCur[c] : twd, { numFmt: '0.00', alignment: { horizontal: 'right' } });
-    setCell(ws, addr(9, rr), '元');
-    rr++;
-  });
-  const overRows = mealOverLimitRows();
-  const overTotal = overRows.reduce((s, o) => s + o.excess, 0);
-  setCell(ws, addr(4, rr), '本幣合計', { font: { bold: true } });
-  const totalTWD = state.expenses.reduce((s, e) => s + localTotalOf(e), 0) - overTotal;
-  setCell(ws, addr(6, rr), totalTWD, { numFmt: '0.00', alignment: { horizontal: 'right' }, font: { bold: true } });
-  setCell(ws, addr(9, rr), '元');
-
-  // 補充說明
-  const noteRow = rr + 2;
-  setCell(ws, addr(1, noteRow), '補充說明', { font: { bold: true } });
-  setCell(ws, addr(2, noteRow), r_note_text(), { alignment: { wrapText: true, vertical: 'top' } });
-  merge(ws, `B${noteRow}:O${noteRow}`);
-  const useRow = noteRow + 1;
-  setCell(ws, addr(1, useRow), '使用備註：', { font: { bold: true } });
-  setCell(ws, addr(2, useRow), '1. 淺黃底套公式請勿更改；　2. 日期一律填西元年；　3. 報銷匯率請向會計確認(非出納提供借支匯率)');
-  merge(ws, `B${useRow}:O${useRow}`);
-}
-function r_note_text() {
-  const n = state.report.note || '';
-  const totalTWD = state.expenses.reduce((s, e) => s + localTotalOf(e), 0);
-  const over = mealOverLimitRows();
-  const overTotal = over.reduce((s, o) => s + o.excess, 0);
-  let t = `報銷請款合計台幣 ${fmt(totalTWD - overTotal)} 元。`;
-  if (over.length) t += `（其中膳食每日上限 ${fmt(state.dailyLimit)} 元，超限共 ${fmt(overTotal)} 元已扣回）`;
-  if (n) t += '\n' + n;
-  return t;
+function exportFileName() {
+  const r = state.report;
+  const s = (r.start || '').replace(/-/g, ''), e = (r.end || '').replace(/-/g, '');
+  const range = s ? (e && e !== s ? `${s}-${e.slice(4)}` : s) : todayStr().replace(/-/g, '');
+  return `${r.person || ''}出差報告暨旅費核銷${range}.xlsx`.replace(/[\\/:*?"<>|]/g, '');
 }
 
 async function doExport() {
@@ -1330,17 +1465,10 @@ async function doExport() {
   btn.disabled = true;
   btn.textContent = '產生中…';
   try {
-    await loadXLSX();
-    const wb = buildWorkbook();
-    // 圖片非同步補入（失敗不影響匯出）
-    const wsDay = wb.Sheets;
-    for (const name of Object.keys(wsDay)) {
-      if (wsDay[name].__pendingImgs) {
-        try { await embedImagesAsync(wsDay[name]); } catch (e) { console.warn('圖片嵌入跳過', e); }
-      }
-    }
-    const fname = `出差報告暨旅費核銷_${state.report.person || '報銷'}_${todayStr().replace(/-/g, '')}.xlsx`;
-    downloadWorkbook(wb, fname);
+    await loadExcelJS();
+    const wb = await buildWorkbook();
+    const buf = await wb.xlsx.writeBuffer();
+    downloadBlob(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), exportFileName());
     toast('匯出完成，資料仍在本地端');
   } catch (err) {
     toast('匯出失敗：' + err.message);
@@ -1351,9 +1479,7 @@ async function doExport() {
   }
 }
 
-function downloadWorkbook(wb, filename) {
-  const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
-  const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;

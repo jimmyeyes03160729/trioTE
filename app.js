@@ -934,8 +934,69 @@ function loadTesseract() {
 // onlyNew=true：只辨識還沒辨識過的框（畫新框時用，不覆蓋已修改的欄位）
 // 某一框辨識不到金額/幣別/日期時，改用整張圖再辨識一次補上
 let fullImageOCR = null; // { img, text } 同一張圖的整張辨識結果快取
+// 只辨識數字（稀疏文字模式），回傳看起來像金額的字與它的字高
+let numWorker = null;
+async function ocrMoneyWords(dataURL) {
+  if (!numWorker) {
+    numWorker = await Tesseract.createWorker('eng');
+    await numWorker.setParameters({ tessedit_pageseg_mode: '11', tessedit_char_whitelist: '0123456789.,-¥$' });
+  }
+  const r = await numWorker.recognize(await upscaleForOcr(dataURL));
+  return ((r && r.data && r.data.words) || [])
+    .filter(w => /^[-−—¥$]?\d{1,6}[.,]\d{2}$/.test(w.text))
+    .map(w => ({ value: parseFloat(w.text.replace(/^[-−—¥$]/, '').replace(',', '.')), h: w.bbox.y1 - w.bbox.y0 }))
+    .filter(w => w.value > 0);
+}
+// 支付截圖、或沒有「總計/合計」標示時：取畫面上字最大的金額（支付截圖的實付金額一定最大）
+async function refineAmount(dataURL, text, parsed) {
+  if (parsed.amountFrom === 'label' && !isPaymentScreenshot(text)) return parsed;
+  try {
+    const words = await ocrMoneyWords(dataURL);
+    if (words.length) {
+      words.sort((a, b) => b.h - a.h);
+      return { ...parsed, amount: words[0].value, amountFrom: 'largest' };
+    }
+  } catch (err) { console.warn('數字辨識失敗', err); }
+  return parsed;
+}
+// 小圖先放大再辨識：手機截圖、裁切出來的小框字太小，OCR 會亂讀（長邊放大到約 2000px，最多 3 倍）
+async function upscaleForOcr(dataURL) {
+  const im = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = dataURL; });
+  const long = Math.max(im.naturalWidth, im.naturalHeight);
+  if (long >= 900) return dataURL; // 夠大就不放大（放太大反而讓字變形、繁簡混淆）
+  const k = 2;
+  const c = document.createElement('canvas');
+  c.width = Math.round(im.naturalWidth * k);
+  c.height = Math.round(im.naturalHeight * k);
+  const g = c.getContext('2d');
+  g.imageSmoothingEnabled = true;
+  g.imageSmoothingQuality = 'high';
+  g.drawImage(im, 0, 0, c.width, c.height);
+  return c.toDataURL('image/png');
+}
+// 中文發票沒有大陸/台灣專用詞時：分別用「簡體」「繁體」模型辨識，誰的中文字信心高就是哪一種
+// （混合模型常把簡體字輸出成繁體字，數字形不準）
+function needsScriptCheck(text) {
+  const t = normalizeOcr(text);
+  if (/HK\$|HKD|港幣|港元|港币|[\u0E00-\u0E7F]|฿|THB/i.test(t)) return false;
+  if (MAINLAND_RE.test(t) || TAIWAN_RE.test(t)) return false;
+  const cjk = (t.match(/[\u4e00-\u9fff]/g) || []).length;
+  const latin = (t.match(/[A-Za-z]/g) || []).length;
+  return cjk >= 2 && !(cjk < 4 && latin >= 10);
+}
+async function scriptByConfidence(dataURL) {
+  const img = await upscaleForOcr(dataURL);
+  const cjkConf = (r) => {
+    const ws = ((r && r.data && r.data.words) || []).filter(w => /[\u4e00-\u9fff]/.test(w.text));
+    return ws.length ? ws.reduce((a, w) => a + w.confidence, 0) / ws.length : 0;
+  };
+  const sim = cjkConf(await Tesseract.recognize(img, 'chi_sim'));
+  const tra = cjkConf(await Tesseract.recognize(img, 'chi_tra'));
+  if (Math.abs(sim - tra) < 3) return null; // 差不多 → 分不出來，交給字表判斷
+  return sim > tra ? 'RMB' : 'NTD';
+}
 async function ocrText(dataURL) {
-  const result = await Tesseract.recognize(dataURL, 'chi_tra+chi_sim+eng', {});
+  const result = await Tesseract.recognize(await upscaleForOcr(dataURL), 'chi_tra+chi_sim+eng', {});
   return (result && result.data && result.data.text) || '';
 }
 async function wholeImageText() {
@@ -959,7 +1020,13 @@ async function runOCR(onlyNew) {
       const p = cropPending[i];
       if (onlyNew === true && p.ocrDone) continue;
       if (status) status.textContent = `辨識中… (${i + 1}/${cropPending.length})`;
-      let parsed = parseReceipt(await ocrText(p.dataURL));
+      const text = await ocrText(p.dataURL);
+      let parsed = await refineAmount(p.dataURL, text, parseReceipt(text));
+      if (needsScriptCheck(text)) {
+        if (status) status.textContent = `判斷繁體/簡體中… (${i + 1}/${cropPending.length})`;
+        const cur = await scriptByConfidence(p.dataURL).catch(() => null);
+        if (cur) parsed = { ...parsed, currency: cur };
+      }
       if ((!parsed.amount || !parsed.currency || !parsed.date || !parsed.category) && !isWholeRect(cropRect[i])) {
         if (status) status.textContent = `這一框資訊不足，改用整張圖辨識… (${i + 1}/${cropPending.length})`;
         const whole = parseReceipt(await wholeImageText());
@@ -1008,10 +1075,15 @@ async function autoRunOCR() {
 const SIMP_CHARS = new Set('皑蔼碍爱袄奥坝罢摆败颁办绊帮绑镑谤剥饱宝报鲍辈贝钡狈备惫绷笔毕毙币闭边编贬变辩辫标鳖别瘪濒滨宾摈饼拨钵铂驳补财参残惭惨灿苍舱仓沧厕侧册测层诧搀掺蝉馋谗缠铲产阐颤场尝长偿肠畅钞车彻尘陈衬撑称惩诚骋迟驰耻齿炽冲宠畴踌筹绸橱厨锄雏础储处传疮闯创锤纯绰辞词赐聪葱囱从丛凑蹿窜错达带贷担单郸掸胆惮诞弹当挡荡档捣岛祷导盗灯邓敌涤递缔颠点垫电钓调谍叠钉顶锭订丢东动栋冻犊独读赌镀锻断缎兑队对顿钝夺堕鹅额讹恶饿尔饵贰发罚阀珐矾钒烦贩饭访纺飞诽废费纷坟奋愤粪枫锋风疯冯缝讽凤肤辐抚辅赋负讣妇缚该钙盖秆赣冈刚钢纲岗镐搁鸽阁铬个给龚宫巩贡钩沟购够蛊顾剐关观馆惯贯广规归龟闺轨诡贵刽辊滚锅国过骇韩汉号阂鹤贺横恒轰鸿红壶护沪户哗华画话欢环还缓换唤痪焕涣黄谎挥辉毁贿秽会烩汇讳诲绘荤浑获货祸击积饥迹讥鸡绩缉辑级挤蓟剂济计记际继纪夹荚颊贾钾驾歼监坚笺间艰缄检碱硷拣捡简俭减槛鉴践贱见键舰剑饯渐溅涧将浆蒋桨奖讲酱胶浇骄娇搅铰矫侥脚饺缴绞轿较阶节结诫届紧锦仅谨进晋烬尽劲荆茎鲸经颈静镜径痉竞净纠厩旧驹举锯惧剧鹃绢觉决诀绝钧军骏开凯颗壳课垦恳抠库裤块侩宽矿旷况亏岿窥馈溃扩阔莱来赖蓝栏拦篮阑兰澜谰揽览懒缆烂滥捞劳涝乐镭垒类泪鲤礼丽厉励砾历沥隶俩联莲连镰涟敛脸链恋炼练粮凉两辆谅疗辽镣猎临邻鳞凛赁龄铃灵领馏刘龙聋咙笼垄拢陇楼娄搂篓芦卢颅庐炉掳卤虏鲁赂禄录陆驴吕铝侣屡缕虑滤绿峦挛孪滦乱抡轮伦仑沦纶论萝罗逻锣箩骡骆络妈玛码蚂马骂吗买麦卖迈脉瞒馒蛮满谩猫锚铆贸没镁门闷们锰梦谜弥觅幂绵缅庙灭悯闽鸣铭谬谋亩呐钠纳难挠脑恼闹馁内拟腻撵酿鸟聂啮镊镍柠狞拧钮纽脓浓农疟诺欧鸥殴呕沤盘庞抛赔喷鹏骗飘频贫凭评泼颇铺谱脐齐骑岂启弃讫牵钎铅迁签谦钱钳潜浅谴堑枪呛墙蔷强抢锹桥乔侨翘窍窃钦亲寝轻氢倾顷请庆琼穷趋区躯驱龋颧权劝却鹊让饶绕热韧认纫荣绒软锐闰润萨鳃赛叁伞丧骚扫涩杀刹纱筛删闪陕赡缮伤赏烧绍赊摄慑设绅审婶肾渗声绳师狮湿诗时蚀实识驶势释饰视试寿兽枢输书赎属术树竖数帅双谁税顺说硕烁丝饲耸怂颂讼诵擞苏诉肃虽随绥岁孙损笋缩琐锁獭挞态摊贪瘫滩坛谭谈叹汤烫涛绦讨腾誊锑题屉条贴铁厅烃铜统头秃图团颓蜕脱鸵驮驼椭袜弯湾顽韦违围为潍维苇伟伪纬谓卫温闻纹稳问挝蜗涡窝卧呜钨乌诬无芜吴坞雾务误锡牺袭习铣戏细虾辖峡侠狭厦吓锨鲜纤贤衔闲显险现献县馅宪线厢镶乡详响项萧嚣销晓啸协挟携胁谐写泻谢锌衅兴汹锈绣虚嘘须许叙绪续轩悬选癣绚学勋询寻驯训讯逊压鸦鸭哑亚讶阉烟盐严颜阎艳厌砚彦谚验鸯杨扬疡阳养样瑶摇尧遥窑谣药爷页业叶医铱颐遗仪蚁艺亿忆义诣议谊译绎荫阴银饮隐樱婴鹰应缨莹萤营荧蝇赢颖哟拥痈咏忧邮铀犹诱舆鱼渔娱屿语狱誉预驭鸳渊辕园员圆缘远约跃钥粤悦阅郧匀陨运蕴酝晕韵杂灾载攒暂赞赃脏凿枣责择则泽贼赠轧铡闸栅诈斋债毡盏斩辗崭栈战绽张涨帐账胀赵蛰辙锗这贞针侦诊镇阵挣睁狰争帧郑证织职执纸挚掷帜质滞钟终肿众诌轴皱昼骤猪诸诛烛瞩嘱贮铸驻专砖转赚桩装妆壮状锥赘坠缀谆浊兹资渍踪综总纵邹诅组钻亘芈啬厍厣厮靥赝匦匮赜刭刿剀伛伥伧伫侪侬俦俨俪俣偾偬偻傥傧傩佥籴黉冁凫兖衮亵脔禀讠讦讧讪讴讵讷诂诃诋诏诎诒诓诔诖诘诙诜诟诠诤诨诩诮诰诳诶诹诼诿谀谂谄谇谌谏谑谒谔谕谖谙谛谘谝谟谠谡谥谧谪谫谮谯谲谳谵谶卺陉陧邝邬邺郏郐郓郦刍奂劢巯垩圹坜垅垆垭垲垴埘埚埙芗苈苋苌苁苎茏茑茔茕荛荜荞荟荠荦荥荨荩荬荪荭荮莳莴莅莶莸莺莼萦蒇蒉蒌蓦蓠蓥蓣蔹蔺蕲薮藓蘖奁尴扪抟挢掴掼揿摅撄撷撸撺弑叽呒呓呖呗呙咛咝哒哓哔哕哙哜咤哝唛唠唢啧啭喽喾嗫嗳辔嘤噜囵帏帱帻帼岖岘岚岽峄峤峥崂崃嵘嵝巅徕犷犸狯狲猃猡猕猬饣饧饨饩饪饫饬饴饷饽馀馄馇馊馍馐馑馓馔馕庑赓廪怃怄忾怅怆怿恸恹恻恺恽悭惬愠愦懔闩闫闱闳闵闶闼闾阃阄阆阈阊阋阌阍阏阒阕阖阗阙阚沣沩泷泸泺泾浃浈浍浏浒浔涞涠渎渑渖渌溆滟滠滢滗潆潇潋潴濑灏骞迩迳逦屦弪妩妪妫姗娅娆娈姹娲娴婵媪嫒嫔嫱嬷驵驷驸驺驿驽骀骁骅骈骊骐骒骓骖骘骛骜骝骟骠骢骣骥骧纟纡纣纥纨纩纭纰纾绀绁绂绉绋绌绐绔绗绛绠绡绨绫绮绯绱绲缍绶绺绻绾缁缂缃缇缈缋缌缏缑缒缗缙缜缛缟缡缢缣缤缥缦缧缪缫缬缭缯缰缱缲缳缵玑玮珑顼玺珲琏瑷璎瓒韪韫韬杩枥枧枨枞枭栉栊栌栀栎柽桠桡桢桤桦桧栾棂椟椠椤椁榄榇榈榉槟槠樯橥橹橼檩殁殇殒殓殚殡轫轭轱轲轳轵轶轸轷轹轺轼轾辁辂辄辇辋辍辎辏辘辚戋戗戬瓯昙晔晖暧贲贳贶贻贽赀赅赆赈赉赇赍赕赙觇觊觋觌觎觏觐觑牦毵氇氩氲牍胧胨胪胫脍脶腼腽腭膑欤飑飒飓飕飙飚毂齑斓炀炜炝烨焖焘祢祯禅怼悫懑戆泶矶砀砗砜砺砻硖硗碛碜龛眍眦睐睑罴羁钅钆钇钋钊钌钍钏钐钔钗钕钚钛钜钣钤钫钪钭钬钯钰钲钴钶钷钸钹钺钼钽钿铄铈铉铊铋铌铍铎铐铑铒铕铖铗铙铘铛铞铟铠铢铤铥铧铨铪铩铫铮铯铳铴铵铷铹铼铽铿锃锂锆锇锉锊锍锎锏锒锓锔锕锖锘锛锝锞锟锢锪锫锩锬锱锲锴锶锷锸锼锾锿镂锵镄镅镆镉镌镎镏镒镓镔镖镗镘镙镛镞镟镝镡镢镤镥镦镧镨镩镪镫镬镯镱镲镳锺稆穑鸠鸢鸨鸩鸪鸫鸬鸲鸱鸶鸸鸷鸹鸺鸾鹁鹂鹄鹆鹇鹈鹉鹋鹌鹎鹑鹕鹗鹚鹛鹜鹞鹣鹦鹧鹨鹩鹪鹫鹬鹱鹭鹳疖疠疬疴疱痖痨痫瘅瘗瘘瘿瘾癞癫窦窭裆裢裣裥褛褴皲耢耧聍聩顸颀颃颉颌颍颏颔颚颛颞颟颡颢颥颦虬虿蚬蛎蛏蛱蛲蛳蛴蝈蝾蝼螨罂笃笕笾筚筝箦箧箨箪箫篑簖籁舣舻袅羟籼粝粜糁糇糍絷麸趱酽酾鹾趸跄跞跷跸跹跻踬踯蹑蹒蹰躏躜觞觯靓雳霁霭龀龃龅龆龇龈龉龊龌黾鼋鼍隽雠銮錾鱿鲂鲅鲆鲇鲈稣鲋鲎鲐鲑鲒鲔鲕鲚鲛鲞鲟鲠鲡鲢鲣鲥鲦鲧鲨鲩鲫鲭鲮鲰鲱鲲鲳鲴鲵鲶鲷鲺鲻鲼鲽鳄鳅鳆鳇鳊鳋鳌鳍鳎鳏鳐鳓鳔鳕鳗鳘鳙鳜鳝鳟鳢鞑鞒鞯鞲鹘髅髋髌魇魉飨餍鬓麽黩黪鼹');
 const TRAD_CHARS = new Set('皚藹礙愛骯襖奧壩罷擺敗頒辦絆幫綁鎊謗剝飽寶報鮑輩貝鋇狽備憊繃筆畢斃幣閉闢邊編貶變辯辮標鱉別癟瀕濱賓擯餅並撥鉢鉑駁補財採參蠶殘慚慘燦蒼艙倉滄廁側冊測層詫攙摻蟬饞讒纏鏟產闡顫場嘗長償腸廠暢鈔車徹塵陳襯撐稱懲誠騁喫癡遲馳恥齒熾衝蟲寵疇躊籌綢醜櫥廚鋤雛礎儲觸處傳瘡牀闖創錘脣純綽辭詞賜聰蔥囪從叢湊躥竄錯達帶貸擔單鄲撣膽憚誕彈當擋黨蕩檔搗島禱導盜燈鄧敵滌遞締顛點墊電澱釣調諜疊釘頂錠訂丟東動棟凍鬥犢獨讀賭鍍鍛斷緞兌隊對噸頓鈍奪墮鵝額訛惡餓兒爾餌貳發罰閥琺礬釩煩範販飯訪紡飛誹廢費紛墳奮憤糞豐楓峯鋒風瘋馮縫諷鳳膚輻撫輔賦復負訃婦縛該鈣蓋幹趕稈贛岡剛鋼綱崗槓鎬擱鴿閣鉻個給龔宮鞏貢鉤溝構購夠蠱顧僱剮掛關觀館慣貫廣規歸龜閨軌詭櫃貴劊輥滾鍋國過駭韓漢號閡鶴賀橫恆轟鴻紅壺護滬戶譁華畫劃話懷壞歡環還緩換喚瘓煥渙黃謊揮輝毀賄穢會燴匯諱誨繪葷渾獲貨禍擊機積飢跡譏雞績緝極輯級擠幾薊劑濟計記際繼紀夾莢頰賈鉀價駕殲監堅箋間艱緘繭檢鹼礆揀撿簡儉減薦檻鑑踐賤見鍵艦劍餞漸濺澗將漿蔣槳獎講醬膠澆驕嬌攪鉸矯僥腳餃繳絞轎較階節傑潔結誡屆緊錦僅謹進晉燼盡勁荊莖鯨驚經頸靜鏡徑痙競淨糾廄舊駒舉據鋸懼劇鵑絹覺決訣絕鈞軍駿開凱顆殼課墾懇摳庫褲誇塊儈寬礦曠況虧巋窺饋潰擴闊蠟臘萊來賴藍欄攔籃闌蘭瀾讕攬覽懶纜爛濫撈勞澇樂鐳壘類淚釐籬離裏鯉禮慄麗厲勵礫歷瀝隸倆聯蓮連鐮憐漣簾斂臉鏈戀煉練糧涼兩輛諒療遼鐐獵臨鄰鱗凜賃齡鈴靈嶺領餾劉龍聾嚨籠壟攏隴樓婁摟簍蘆盧顱廬爐擄滷虜魯賂祿錄陸驢呂鋁侶屢縷慮濾綠巒攣孿灤亂掄輪倫侖淪綸論蘿羅邏鑼籮騾駱絡媽瑪碼螞馬罵嗎買麥賣邁脈瞞饅蠻滿謾貓錨鉚貿麼黴沒鎂門悶們錳夢謎彌祕覓冪綿緬廟滅憫閩鳴銘謬謀畝吶鈉納難撓腦惱鬧餒內擬膩攆釀鳥聶齧鑷鎳檸獰寧擰濘鈕紐膿濃農瘧諾歐鷗毆嘔漚盤龐拋賠噴鵬騙飄頻貧蘋憑評潑頗撲鋪僕樸譜棲悽臍齊騎豈啓氣棄訖牽釺鉛遷籤謙錢鉗潛淺譴塹槍嗆牆薔強搶鍬橋喬僑翹竅竊欽親寢輕氫傾頃請慶瓊窮趨區軀驅齲顴權勸卻鵲確羣讓饒擾繞熱韌認紉榮絨軟銳閏潤灑薩鰓賽叄傘喪騷掃澀殺剎紗篩曬刪閃陝贍繕傷賞燒紹賒攝懾設紳審嬸腎滲聲繩勝聖師獅溼詩屍蝨時蝕實識駛勢適釋飾視試壽獸樞輸書贖屬術樹豎數帥雙誰稅順說碩爍絲飼聳慫頌訟誦擻蘇訴肅雖隨綏歲孫損筍縮瑣鎖獺撻臺態攤貪癱灘壇譚談嘆湯燙濤絛討騰謄銻題體屜條貼鐵廳聽烴銅統頭禿圖塗團頹蛻託脫鴕馱駝橢窪襪彎灣頑萬網韋違圍爲濰維葦偉僞緯謂衛溫聞紋穩問甕撾蝸渦窩臥嗚鎢烏誣無蕪吳塢霧務誤錫犧襲習銑戲細蝦轄峽俠狹廈嚇鍁鮮纖鹹賢銜閒顯險現獻縣餡羨憲線廂鑲鄉詳響項蕭囂銷曉嘯蠍協挾攜脅諧寫瀉謝鋅釁興兇洶鏽繡虛噓須許敘緒續軒懸選癬絢學勳燻詢尋馴訓訊遜壓鴉鴨啞亞訝閹煙鹽嚴巖顏閻豔厭硯彥諺驗鴦楊揚瘍陽癢養樣瑤搖堯遙窯謠藥爺頁業葉醫銥頤遺儀蟻藝億憶義詣議誼譯異繹蔭陰銀飲隱櫻嬰鷹應纓瑩螢營熒蠅贏穎喲擁傭癰詠湧優憂郵鈾猶遊誘輿餘魚漁娛與嶼語鬱籲獄譽預馭鴛淵轅園員圓緣遠願約躍鑰嶽粵悅閱雲鄖勻隕運蘊醞暈韻雜災載攢暫贊贓髒鑿棗皁竈責擇則澤賊贈軋鍘閘柵詐齋債氈盞斬輾嶄棧佔戰綻張漲帳賬脹趙蟄轍鍺這貞針偵診鎮陣掙睜猙爭幀鄭證織職執紙摯擲幟質滯鍾終種腫衆謅軸皺晝驟豬諸誅燭矚囑貯鑄築駐專磚轉賺樁莊裝妝壯狀錐贅墜綴諄準濁茲諮資漬蹤綜總縱鄒詛組鑽亙羋嗇厙厴廝靨贗匭匱賾剄劌剴傴倀傖佇儕儂儔儼儷俁僨傯僂儻儐儺僉糴黌囅鳧兗袞褻臠稟訁訐訌訕謳詎訥詁訶詆詔詘詒誆誄詿詰詼詵詬詮諍諢詡誚誥誑誒諏諑諉諛諗諂誶諶諫謔謁諤諭諼諳諦諞謨讜謖諡謐謫譾譖譙譎讞譫讖巹陘隉鄺鄔鄴郟鄶鄆酈芻奐勱巰堊壙壢壠壚埡塏堖塒堝壎薌藶莧萇蓯苧蘢蔦塋煢蕘蓽蕎薈薺犖滎蕁藎蕒蓀葒葤蒔萵蒞薟蕕鶯蓴縈蕆蕢蔞驀蘺鎣蕷蘞藺蘄藪蘚櫱奩尷捫摶撟摑摜撳攄攖擷擼攛弒嘰嘸囈嚦唄咼嚀噝噠嘵嗶噦噲嚌噥嘜嘮嗩嘖囀嘍嚳囁噯轡嚶嚕圇幃幬幘幗嶇峴嵐崬嶧嶠崢嶗崍嶸嶁巔徠獷獁獪猻獫玀獼蝟飠餳飩餼飪飫飭飴餉餑餛餷餿饃饈饉饊饌饢廡賡廩懺憮慪愾悵愴懌慟懨惻愷惲慳愜慍憒懍閂閆闈閎閔閌闥閭閫鬮閬閾閶鬩閿閽閼闃闋闔闐闕闞灃潙瀧瀘濼涇浹湞澮瀏滸潯淶潿瀆澠淥漵灩灄瀅潷瀠瀟瀲瀦瀨灝騫邇逕邐屨弳嫵嫗嬀姍婭嬈孌奼媧嫺嬋媼嬡嬪嬙嬤駔駟駙騶驛駑駘驍驊駢驪騏騍騅驂騭騖驁騮騸驃驄驏驥驤糹紆紂紇紈纊紜紕紓紺紲紱縐紼絀紿絝絎絳綆綃綈綾綺緋鞝緄綞綬綹綣綰緇緙緗緹緲繢緦緶緱縋緡縉縝縟縞縭縊縑繽縹縵縲繆繅纈繚繒繮繾繰繯纘璣瑋瓏頊璽琿璉璦瓔瓚韙韞韜榪櫪梘棖樅梟櫛櫳櫨梔櫟檉椏橈楨榿樺檜欒欞櫝槧欏槨欖櫬櫚櫸檳櫧檣櫫櫓櫞檁歿殤殞殮殫殯軔軛軲軻轤軹軼軫軤轢軺軾輊輇輅輒輦輞輟輜輳轆轔戔戧戩甌曇曄暉曖賁貰貺貽贄貲賅贐賑賚賕齎賧賻覘覬覡覿覦覯覲覷犛毿氌氬氳牘餚朧腖臚脛膾腡醃靦膃齶臏羶歟颮颯颶颼飆飈轂齏斕煬煒燉熗燁燜燾禰禎禪懟愨懣戇澩磯碭硨碸礪礱硤磽磧磣龕瞘眥睞瞼羆羈釒釓釔釙釗釕釷釧釤鍆釵釹鈈鈦鈑鈐鈁鈧鈄鈥鈀鈺鉦鈷鈳鉕鈽鈸鉞鉬鉭鈿鑠鈰鉉鉈鉍鈮鈹鐸銬銠鉺銪鋮鋏鐃鋣鐺銱銦鎧銖鋌銩鏵銓鉿鎩銚錚銫銃鐋銨銣鐒錸鋱鏗鋥鋰鋯鋨銼鋝鋶鐦鐧鋃鋟鋦錒錆鍩錛鍀錁錕錮鍃錇錈錟錙鍥鍇鍶鍔鍤鎪鍰鎄鏤鏘鐨鎇鏌鎘鐫鎿鎦鎰鎵鑌鏢鏜鏝鏍鏞鏃鏑鐔钁鏷鑥鐓鑭鐠鑹鏹鐙鑊鐲鐿鑔鑣穡鳩鳶鴇鴆鴣鶇鸕鴝鴟鷥鴯鷙鴰鵂鸞鵓鸝鵠鵒鷳鵜鵡鶓鵪鵯鶉鶘鶚鷀鶥鶩鷂鶼鸚鷓鷚鷯鷦鷲鷸鸌鷺鸛癤癘癧痾皰瘂癆癇癉瘞瘻癭癮癩癲竇窶襠褳襝襉褸襤皸耮耬聹聵頇頎頏頡頜潁頦頷顎顓顳顢顙顥顬顰虯蟣蠆蜆蠔蠣蟶蛺蟯螄蠐蟈蠑螻蟎罌篤筧籩篳箏簀篋籜簞簫簣籪籟艤艫嫋羥秈糲糶糉糝餱餈縶麩趲釅釃鹺躉蹌蹠躒蹺蹕躚躋躓躑躡蹣躕躪躦觴觶靚靂霽靄齔齟齙齠齜齦齬齪齷黽黿鼉雋讎鑾鏨魷魴鮁鮃鮎鱸穌鮒鱟鮐鮭鮚鮪鮞鱭鮫鯗鱘鯁鱺鰱鰹鰣鰷鯀鯊鯇鯽鯖鯪鯫鯡鯤鯧鯝鯢鯰鯛鯴鯔鱝鰈鱷鰍鰒鰉鯿鰠鰲鰭鰨鰥鰩鰳鰾鱈鰻鰵鱅鱖鱔鱒鱧韃鞽韉韝鶻髏髖髕魘魎饗饜鬢黷黲鼴');
 function countChars(text, set) { let n = 0; for (const ch of text) if (set.has(ch)) n++; return n; }
+// 只有大陸 / 只有台灣才會出現的詞（比數繁簡字更準：手機介面設成繁體時，大陸的支付截圖標籤也會是繁體）
+const MAINLAND_RE = /小程序|[财財]付通|微信支付|支付[宝寶]|云闪付|雲閃付|美[团團]|[饿餓]了[么麼]|滴滴出行|大[众眾]点[评評]|大眾點評|淘[宝寶]|天[猫貓]|京[东東]|拼多多|[携攜]程|12306|增值[税稅]|[价價][税稅]合[计計]|[统統]一社[会會]信用代[码碼]|[（(]中[国國][)）]|人民[币幣]|[发發]票代[码碼]/;
+const TAIWAN_RE = /[統统]一[編编][號号]|[統统][編编]|[電电]子[發发]票[證证]明[聯联]|悠遊卡|一卡通|街口|全家便利|[統统]一超商|7-?ELEVEN|中華電信|台灣大哥大|遠傳|新[臺台]幣|[臺台]北市|新北市|桃園市|[臺台]中市|[臺台]南市|高雄市|新竹[市縣]/i;
 function detectCurrency(text) {
-  const t = String(text || '');
+  const t = normalizeOcr(text);
   if (/HK\$|HKD|港幣|港元|港币/i.test(t)) return 'HKD';
   if (/[\u0E00-\u0E7F]|฿|THB|泰銖|泰铢/i.test(t)) return 'THB';
+  if (MAINLAND_RE.test(t)) return 'RMB';
+  if (TAIWAN_RE.test(t)) return 'NTD';
   const cjk = (t.match(/[\u4e00-\u9fff]/g) || []).length;
   const latin = (t.match(/[A-Za-z]/g) || []).length;
   const english = cjk < 4 && latin >= 10; // 英文收據（辨識雜訊偶爾冒出幾個中文字不算）
@@ -1031,8 +1103,19 @@ function detectCurrency(text) {
   return null;
 }
 
+// OCR 常在中文字之間多插空白（「小 程序」「(中 國 )」），比對關鍵字前先拿掉
+function normalizeOcr(text) {
+  return String(text || '')
+    .replace(/([\u4e00-\u9fff（(])[ \t]+(?=[\u4e00-\u9fff）)])/g, '$1')
+    .replace(/([\u4e00-\u9fff])[ \t]+(?=[\u4e00-\u9fff])/g, '$1');
+}
+// 手機支付截圖（微信/支付寶/雲閃付…）：金額通常是畫面上最大的數字
+const PAYMENT_RE = /支付成功|付款成功|交易成功|交易[詳详]情|[帳账]單[詳详]情|支付[時时][間间]|付款[時时][間间]|交易[時时][間间]|小程序|微信支付|支付[寶宝]|雲閃付|云闪付|Alipay|WeChat\s*Pay|Apple\s*Pay|LINE\s*Pay|街口/i;
+function isPaymentScreenshot(text) { return PAYMENT_RE.test(normalizeOcr(text)); }
+
 function parseReceipt(text) {
-  const out = { amount: null, currency: null, date: null, category: null };
+  text = normalizeOcr(text);
+  const out = { amount: null, currency: null, date: null, category: null, amountFrom: null };
   // ---------- 日期（支援各國格式）----------
   // 西元：2019/10/16、2019年10月16日、2019-10-16、2019.10.16
   // 民國：108/10/12、108年10月12日、108.10.12（108 → 2019）
@@ -1052,19 +1135,23 @@ function parseReceipt(text) {
     maxAmt(/[¥￥]\s*([0-9][0-9,]*\.?\d{0,2})/g) ||
     firstAmt(/(?:合計|合计|共计|共計|金額|金额|小计|小計|AMOUNT|Amount)[^\d]{0,8}([0-9][0-9,]*\.?\d{0,2})/) ||
     firstAmt(/NT\$?\s*([0-9][0-9,]*\.?\d{0,2})/) ||
-    maxAmt(/\$\s*([0-9][0-9,]*\.?\d{0,2})/g) ||
-    firstAmt(/([0-9]{1,3}(?:,[0-9]{3})+\.\d{1,2})/) ||
-    firstAmt(/([0-9]{2,7}\.\d{1,2})/) || null;
+    maxAmt(/\$\s*([0-9][0-9,]*\.?\d{0,2})/g) || null;
+  if (out.amount) out.amountFrom = 'label'; // 有「總計/合計/¥/$」等標示的金額
+  else {
+    out.amount = firstAmt(/([0-9]{1,3}(?:,[0-9]{3})+\.\d{1,2})/) || firstAmt(/([0-9]{2,7}\.\d{1,2})(?![0-9]*\s*[萬万%])/) || null;
+    if (out.amount) out.amountFrom = 'guess';
+  }
   // 後備：取文字中「看似金額」的最大數字（排除 4 位數年份、日期）
   if (!out.amount) {
     const nums = [];
     const re = /[0-9][0-9,]*(?:\.\d{1,2})?/g;
     let mm;
     while ((mm = re.exec(text)) !== null) {
+      if (/^\s*[萬万%人+]/.test(text.slice(mm.index + mm[0].length))) continue; // 「356万+人喜欢」這種不是金額
       const v = parseFloat(mm[0].replace(/,/g, ''));
       if (v > 0 && v < 1000000 && !(v >= 1900 && v <= 2099)) nums.push(v);
     }
-    if (nums.length) out.amount = Math.max(...nums);
+    if (nums.length) { out.amount = Math.max(...nums); out.amountFrom = 'guess'; }
   }
 
   // ---------- 類別（關鍵字）----------
@@ -1077,6 +1164,9 @@ function parseReceipt(text) {
 // 解析日期文字（支援西元/民國）
 function parseDateText(text) {
   if (!text) return null;
+  // 支付截圖：「支付時間 2026/10/18」的斜線常被 OCR 看成 1 → 2026110118
+  const pay = text.match(/(?:支付|付款|交易|消[費费])[時时][間间]\s*[:：]?\s*(20\d{2})[1lI|\/\-.](\d{2})[1lI|\/\-.](\d{2})/);
+  if (pay && +pay[2] >= 1 && +pay[2] <= 12 && +pay[3] >= 1 && +pay[3] <= 31) return `${pay[1]}-${pay[2]}-${pay[3]}`;
   // 優先：有標示「開票日期 / 日期 / Date」的那個日期
   const lab = text.match(/(?:开票日期|開票日期|交易日期|消費日期|日期|Date|DATE)\s*[:：]?\s*(\d{2,4}\s*[年\/\-\.]\s*\d{1,2}\s*[月\/\-\.]\s*\d{1,2})/);
   if (lab && lab[1] !== text) { const d = parseDateText(lab[1]); if (d) return d; }
@@ -1096,7 +1186,7 @@ function parseDateText(text) {
   m = text.match(/(\d{2,3})\s*[年\/\-\.]\s*(\d{1,2})\s*[月\/\-\.]\s*(\d{1,2})\s*日?/);
   if (m && +m[1] < 200 && (r = ymd(+m[1] + 1911, +m[2], +m[3]))) return r;
   // 純 月/日（無年）
-  m = text.match(/(\d{1,2})\s*[月\/\-\.]\s*(\d{1,2})\s*日?/);
+  m = text.match(/(?<![\d:.])(\d{1,2})\s*[月\/]\s*(\d{1,2})\s*日?(?![\d:.])/);
   if (m) {
     const mo = parseInt(m[1], 10), d = parseInt(m[2], 10);
     if (mo >= 1 && mo <= 12 && d >= 1 && d <= 31) {

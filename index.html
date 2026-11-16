@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>trioTE 出差報銷懶人系統</title>
-<link rel="stylesheet" href="style.css?v=20261029i">
+<link rel="stylesheet" href="style.css?v=20261116a">
 </head>
 <body>
 <header class="topbar">
@@ -37,10 +37,24 @@
     </table>
     <div class="row-actions">
       <button id="btn-add-rate" class="btn">+ 新增幣別</button>
-      <label class="limit-label">膳食每日上限(台幣)：
-        <input type="number" id="daily-limit" min="0" step="1" value="600"> 元
-        <span class="limit-note">只適用「膳食」類別；同一天膳食超過上限，匯出時自動扣回</span>
-      </label>
+    </div>
+    <div class="card limit-card">
+      <div class="card-title">報銷上限（依出國外出差管理辦法，超過的部分匯出時自動扣回）</div>
+      <div class="limit-row">
+        <span class="limit-name">膳食費</span>
+        公司未提供餐食
+        <input type="number" id="meal-days" min="0" step="1" placeholder="天數"> 天 ×
+        <select id="meal-region">
+          <option value="general">每天 台幣 600</option>
+          <option value="euus">歐美地區 每天 USD 90</option>
+        </select>
+        = 上限 <b id="meal-cap">—</b>
+      </div>
+      <div class="limit-row">
+        <span class="limit-name">住家↔機場交通</span>
+        去程上限 台幣 <input type="number" id="airport-cap" min="0" step="1"> 元、回程上限同樣金額
+        <span class="limit-note">在「4. 核銷明細」交通費那一列選「去程／回程／去回程」</span>
+      </div>
     </div>
   </section>
 
@@ -229,7 +243,7 @@
 
 <div class="toast" id="toast"></div>
 
-<script src="template-spec.js?v=20261029i"></script>
-<script src="app.js?v=20261029i"></script>
+<script src="template-spec.js?v=20261116a"></script>
+<script src="app.js?v=20261116a"></script>
 </body>
 </html>

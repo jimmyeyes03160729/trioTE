@@ -41,6 +41,12 @@ h2{margin:0 0 6px;font-size:18px}
 .rate-table .del{border:none;background:none;color:var(--danger);cursor:pointer;font-size:16px}
 .row-actions{display:flex;align-items:center;gap:20px;margin-top:14px;flex-wrap:wrap}
 .limit-label{font-weight:600}
+.limit-card{margin-top:16px}
+.limit-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:6px 0;font-size:14px}
+.limit-row .limit-name{font-weight:700;min-width:110px}
+.limit-row input,.limit-row select{padding:5px 8px;border:1px solid var(--line);border-radius:6px;font-family:inherit}
+.limit-row input{width:90px}
+.airport-sel{margin-top:4px;font-size:12px!important;color:#1d4ed8}
 /* Google Drive */
 .modal-box.drive-box{width:min(640px,100%);height:auto!important;max-height:92vh}
 .drive-body{padding:16px 20px;overflow:auto;font-size:14px;line-height:1.7}

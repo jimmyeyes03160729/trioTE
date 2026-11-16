@@ -30,7 +30,10 @@ let cropCtx = null; // 目前裁切的圖片資料
 function defaultState() {
   return {
     rates: JSON.parse(JSON.stringify(DEFAULT_RATES)),
-    dailyLimit: 600,
+    dailyLimit: 600,      // 膳食：一般地區每天台幣上限
+    mealDays: '',         // 公司未提供餐食天數 N（自己填）
+    mealRegion: 'general',// general：台幣600×N；euus：歐美 USD90×N
+    airportCap: 600,      // 住家↔機場交通：去程、回程各上限（台幣）
     report: {
       company: '塞席爾商三集瑞',
       tripType: '國外',
@@ -224,7 +227,10 @@ function renderRates() {
     tr.innerHTML = `<td>${codeInput}</td><td>${rateInput}</td><td>${del}</td>`;
     body.appendChild(tr);
   });
-  $('#daily-limit').value = state.dailyLimit;
+  $('#meal-days').value = state.mealDays === undefined ? '' : state.mealDays;
+  $('#meal-region').value = state.mealRegion || 'general';
+  $('#airport-cap').value = state.airportCap === undefined ? 600 : state.airportCap;
+  renderLimitInfo();
   fillAdvCur();
 }
 
@@ -302,21 +308,13 @@ function renderSummary() {
     const t = state.expenses.filter(e => e.category === cat).reduce((s, e) => s + localTotalOf(e), 0);
     if (t > 0) chips.push({ lbl: cat, val: fmt(t) });
   });
-  // 每日膳食上限檢查
-  const dayMeals = {};
-  state.expenses.forEach(e => {
-    if (e.category !== '膳食' || !e.date) return;
-    const t = localTotalOf(e);
-    dayMeals[e.date] = (dayMeals[e.date] || 0) + t;
-  });
-  const over = Object.entries(dayMeals).filter(([, t]) => t > num(state.dailyLimit));
-  if (over.length) {
-    chips.push({
-      lbl: '膳食超限',
-      val: over.map(([d, t]) => `${d.slice(5)}(${fmt(t)})`).join('、'),
-      warn: true,
-    });
-  }
+  // 報銷上限檢查
+  const m = mealCap();
+  if (m.meals.length && !m.set) chips.push({ lbl: '膳食上限', val: '請到「1. 匯率」填未供餐天數', warn: true });
+  if (m.excess > 0) chips.push({ lbl: '膳食超限扣回', val: `NTD ${fmt(m.excess)}（上限 ${fmt(m.cap, 0)}）`, warn: true });
+  const a = airportCap();
+  if (a.excess > 0) chips.push({ lbl: '機場交通超限扣回', val: `NTD ${fmt(a.excess)}（${a.overLegs.map(k => AIRPORT_LEGS[k]).join('、')}）`, warn: true });
+  renderLimitInfo();
   const pv = $('#f-prepaid-view');
   if (pv) pv.value = companyBookedTotal() ? 'NTD ' + fmt(companyBookedTotal(), 0) : '（尚未新增）';
   bar.innerHTML = chips.map(c =>
@@ -358,6 +356,7 @@ function renderExpenses() {
   list.forEach(e => {
     body.appendChild(renderExpenseRow(e));
   });
+  refreshOverLimitMarks();
 }
 
 function renderExpenseRow(e) {
@@ -381,7 +380,8 @@ function renderExpenseRow(e) {
     <td><input type="date" value="${esc(e.date || '')}" data-k="date" title="開始日期"></td>
     <td><input type="date" value="${esc(e.dateEnd || '')}" data-k="dateEnd" title="結束日期（住宿、機票等跨日才需要填，空白=同開始日期）"></td>
     <td><select data-k="currency" title="幣別">${curOpts}</select></td>
-    <td><select data-k="category" title="類別">${catOpts}</select></td>
+    <td><select data-k="category" title="類別">${catOpts}</select>${(e.category === '交通' && !e.companyBooked)
+      ? `<select data-k="airportLeg" class="airport-sel" title="住家往返機場的交通（去程、回程各有上限）"><option value="">非機場接送</option>${Object.entries(AIRPORT_LEGS).map(([k, t]) => `<option value="${k}" ${e.airportLeg === k ? 'selected' : ''}>住家↔機場 ${t}</option>`).join('')}</select>` : ''}</td>
     <td><input type="number" step="0.01" class="num" value="${e.amount}" data-k="amount" title="金額(原幣)"></td>
     <td><input type="number" step="0.0001" class="num" value="${e.rate}" data-k="rate" title="適用匯率"></td>
     <td class="local-total"></td>
@@ -411,6 +411,10 @@ function renderExpenseRow(e) {
       if (k === 'amount' || k === 'rate') v = num(v);
       e[k] = v;
       if (k === 'currency') e.rate = getRate(v); // 換幣別自動帶匯率
+      if (k === 'category' || k === 'airportLeg') {
+        // 類別/機場選項改變 → 整張表重畫（顯示或隱藏「住家↔機場」選項）
+        saveState(); renderSummary(); renderExpenses(); return;
+      }
       updateFeeCells(tr, e);
       saveState();
       renderSummary();
@@ -428,15 +432,26 @@ function renderExpenseRow(e) {
 function updateFeeCells(tr, e) {
   const local = localTotalOf(e);
   tr.querySelector('.local-total').textContent = fmt(local);
-  tr.classList.toggle('over-limit', isOverLimit(e));
+  refreshOverLimitMarks(); // 上限是整趟合計 → 一筆改了，其他列的紅底也要更新
+}
+function refreshOverLimitMarks() {
+  $$('#expense-body tr[data-id]').forEach(row => {
+    const x = state.expenses.find(e => e.id === row.dataset.id);
+    if (x) row.classList.toggle('over-limit', isOverLimit(x));
+  });
 }
 
+// 紅底標示：膳食整趟超過上限 → 所有膳食列；住家↔機場超限 → 該去程/回程的列
 function isOverLimit(e) {
-  if (e.category !== '膳食' || !e.date) return false;
-  const dayTotal = state.expenses
-    .filter(x => x.category === '膳食' && x.date === e.date)
-    .reduce((s, x) => s + localTotalOf(x), 0);
-  return dayTotal > num(state.dailyLimit);
+  if (e.category === '膳食') return mealCap().excess > 0;
+  if (e.category === '交通' && e.airportLeg) return airportCap().overLegs.includes(e.airportLeg);
+  return false;
+}
+function renderLimitInfo() {
+  const el = $('#meal-cap');
+  if (!el) return;
+  const m = mealCap();
+  el.textContent = m.set ? `NTD ${fmt(m.cap, 0)}` + (m.euus ? `（USD ${fmt(MEAL_USD_PER_DAY * m.days, 0)} × ${fmt(m.usdRate, 4)}）` : '') : '—（請填天數）';
 }
 
 function deleteExpense(idx) {
@@ -1244,16 +1259,52 @@ function mealSummaryRows(list) {
 function sortByDate(list) {
   return list.slice().sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
 }
-function mealOverLimitRows() {
-  const dayMeals = {};
-  state.expenses.forEach(e => {
-    if (e.category !== '膳食' || !e.date) return;
-    dayMeals[e.date] = (dayMeals[e.date] || 0) + localTotalOf(e);
+// ---------- 報銷上限 ----------
+// 膳食：上限 = 公司未提供餐食天數 N × 每天 600 台幣（歐美：USD 90 × N × 美金匯率），整趟合計比較
+const MEAL_USD_PER_DAY = 90;
+function mealCap() {
+  const days = num(state.mealDays);
+  const meals = state.expenses.filter(e => e.category === '膳食');
+  const total = round2(meals.reduce((s, e) => s + localTotalOf(e), 0));
+  const euus = state.mealRegion === 'euus';
+  const usdRate = getRate('USD');
+  const cap = round2(euus ? MEAL_USD_PER_DAY * days * usdRate : num(state.dailyLimit) * days);
+  const label = euus ? `未供餐${days}天×USD${MEAL_USD_PER_DAY}` : `未供餐${days}天×${fmt(num(state.dailyLimit), 0)}元`;
+  const set = String(state.mealDays).trim() !== '';
+  return { days, set, total, cap, excess: set ? round2(Math.max(0, total - cap)) : 0, label, meals, euus, usdRate };
+}
+// 住家↔機場交通：去程合計 ≤ 上限、回程合計 ≤ 上限、去回程同一張 ≤ 2倍上限
+const AIRPORT_LEGS = { out: '去程', back: '回程', both: '去回程' };
+function airportCap() {
+  const capOne = num(state.airportCap);
+  const groups = { out: [], back: [], both: [] };
+  state.expenses.forEach(e => { if (e.category === '交通' && !e.companyBooked && groups[e.airportLeg]) groups[e.airportLeg].push(e); });
+  let excess = 0; const overLegs = [];
+  Object.entries(groups).forEach(([leg, list]) => {
+    if (!list.length) return;
+    const sum = list.reduce((s, e) => s + localTotalOf(e), 0);
+    const cap = capOne * (leg === 'both' ? 2 : 1);
+    if (sum > cap) { excess += sum - cap; overLegs.push(leg); }
   });
-  const limit = num(state.dailyLimit);
-  return Object.keys(dayMeals).sort()
-    .filter(d => dayMeals[d] > limit)
-    .map(d => ({ date: d, excess: round2(dayMeals[d] - limit), limit }));
+  const all = [...groups.out, ...groups.back, ...groups.both];
+  return { capOne, excess: round2(excess), overLegs, all, groups };
+}
+// 主表的扣回列（膳食、住家↔機場交通），各合併成一列
+function deductionRows() {
+  const out = [];
+  const m = mealCap();
+  if (m.excess > 0) {
+    const ds = m.meals.map(e => e.date).filter(Boolean).sort();
+    out.push({ date: ds[0] || '', dateEnd: ds[ds.length - 1] || '', fee: 'H', amount: -m.excess,
+      desc: `膳食超限扣回(上限${m.label}=${fmt(m.cap, 0)}元)` });
+  }
+  const a = airportCap();
+  if (a.excess > 0) {
+    const ds = a.all.map(e => e.date).filter(Boolean).sort();
+    out.push({ date: ds[0] || '', dateEnd: ds[ds.length - 1] || '', fee: 'F', amount: -a.excess,
+      desc: `住家往返機場交通超限扣回(去程、回程各上限${fmt(a.capOne, 0)}元)` });
+  }
+  return out;
 }
 function currencyCodes() {
   const out = [];
@@ -1329,24 +1380,20 @@ function writeDetailRow(ws, r, spec, e, dv) {
   return { cur: e.currency || 'NTD', local, orig: num(e.amount) };
 }
 
-// 膳食超限扣回：所有超限日合併成一列（日期 = 第一個～最後一個超限日）
-function writeDeductRow(ws, r, spec, overList, dv) {
+// 超限扣回列（紅字）：台幣負數，放在膳食費(H)或交通費(F)欄
+function writeDeductRow(ws, r, spec, d, dv) {
   putRow(ws, r, spec);
-  const o = {
-    excess: round2(overList.reduce((s, x) => s + x.excess, 0)),
-    limit: overList[0].limit,
-  };
-  const d1 = toXlDate(overList[0].date), d2 = toXlDate(overList[overList.length - 1].date);
+  const d1 = toXlDate(d.date), d2 = toXlDate(d.dateEnd || d.date);
   if (d1) setV(ws, 'A' + r, d1);
   if (d2) setV(ws, 'B' + r, d2);
   setV(ws, 'C' + r, '現金');
   setV(ws, 'D' + r, 'NTD');
   setF(ws, 'E' + r, rateFormula(r), 1);
-  setV(ws, 'F' + r, 0); setV(ws, 'H' + r, -o.excess); setV(ws, 'J' + r, 0); setV(ws, 'L' + r, 0);
-  setF(ws, 'N' + r, `E${r}*(F${r}+H${r}+J${r}+L${r})`, -o.excess);
-  setV(ws, 'P' + r, `膳食超限扣回(每日上限${fmt(o.limit, 0)}元，共${overList.length}天)`);
+  ['F', 'H', 'J', 'L'].forEach(c => setV(ws, c + r, c === d.fee ? d.amount : 0));
+  setF(ws, 'N' + r, `E${r}*(F${r}+H${r}+J${r}+L${r})`, d.amount);
+  setV(ws, 'P' + r, d.desc);
   dv[r] = true;
-  return { cur: 'NTD', local: -o.excess, orig: -o.excess };
+  return { cur: 'NTD', local: d.amount, orig: d.amount };
 }
 
 // 檢附憑證/幣別彙總區（範本 42~48 列；交際費 58~62 列同結構）
@@ -1479,11 +1526,11 @@ function buildMainSheet(wb, codes) {
     ...sortByDate([...travel.filter(e => e.category !== '膳食' && !e.companyBooked), ...mealSummaryRows(travel)]),
   ];
   const ent = sortByDate(state.expenses.filter(e => e.category === ENT_CATEGORY));
-  const over = mealOverLimitRows();
+  const deducts = deductionRows();
   const rows = [];
   let row = DETAIL_START;
   travelRows.forEach(e => { rows.push(writeDetailRow(ws, row, T.detail, e, dvRows)); row++; });
-  if (over.length) { rows.push(writeDeductRow(ws, row, T.deduct, over, dvRows)); row++; }
+  deducts.forEach(d => { rows.push(writeDeductRow(ws, row, T.deduct, d, dvRows)); row++; });
   if (row === DETAIL_START) { putRow(ws, row, T.detail); dvRows[row] = true; row++; } // 至少留一列空白明細
   const d1 = DETAIL_START, d2 = row - 1;
 
@@ -1758,22 +1805,27 @@ function buildMealTableSheet(wb, list) {
   RC_COLS.forEach((c, i) => rcPut(ws, colL(i + 1) + '2', c.h, RC.head));
   ws.getRow(2).height = 30;
 
-  const limit = num(state.dailyLimit);
   const sorted = sortByDate(list);
   const sumRefs = []; let grand = 0; let r = 3;
   [...new Set(sorted.map(e => e.date || ''))].forEach(day => {
     const first = r; let dayTotal = 0;
     sorted.filter(e => (e.date || '') === day).forEach(e => { dayTotal += rcItemRow(ws, r, e); r++; });
     dayTotal = round2(dayTotal);
-    rcSumRow(ws, r, (day ? mdText(day) : '未填日期') + `　小計（每日上限 ${fmt(limit, 0)} 元）`, `SUM(H${first}:H${r - 1})`, dayTotal);
+    rcSumRow(ws, r, (day ? mdText(day) : '未填日期') + '　小計', `SUM(H${first}:H${r - 1})`, dayTotal);
     sumRefs.push('H' + r); grand += dayTotal; r++;
-    if (day && dayTotal > limit) {
-      const over = round2(dayTotal - limit);
-      rcSumRow(ws, r, `${mdText(day)}　超限扣回`, `-(H${r - 1}-${limit})`, -over, true);
-      sumRefs.push('H' + r); grand -= over; r++;
-    }
   });
-  rcSumRow(ws, r, '膳食費合計（已扣除超限）', sumRefs.join('+') || '0', round2(grand));
+  grand = round2(grand);
+  const totalRow = r;
+  rcSumRow(ws, r, '膳食費合計', sumRefs.join('+') || '0', grand); r++;
+  // 整趟上限：公司未提供餐食 N 天 × 每天上限
+  const m = mealCap();
+  if (m.set) {
+    const capRow = r;
+    const capF = m.euus ? `${MEAL_USD_PER_DAY}*${m.days}*${m.usdRate}` : `${num(state.dailyLimit)}*${m.days}`;
+    rcSumRow(ws, r, `膳食費上限（${m.label}）`, capF, m.cap); r++;
+    rcSumRow(ws, r, '超限扣回', `-MAX(0,H${totalRow}-H${capRow})`, -m.excess, true); r++;
+    rcSumRow(ws, r, '膳食費報銷金額', `H${totalRow}+H${r - 1}`, round2(grand - m.excess));
+  }
 }
 
 // 照片頁：只放發票/收據照片。byDate=true 時每天先放一列日期標題
@@ -2158,12 +2210,10 @@ function bindEvents() {
     saveState();
     renderRates();
   });
-  $('#daily-limit').addEventListener('change', (e) => {
-    state.dailyLimit = num(e.target.value);
-    saveState();
-    renderSummary();
-    renderExpenses();
-  });
+  const limitChanged = () => { saveState(); renderSummary(); renderExpenses(); };
+  $('#meal-days').addEventListener('input', (e) => { state.mealDays = e.target.value; limitChanged(); });
+  $('#meal-region').addEventListener('change', (e) => { state.mealRegion = e.target.value; limitChanged(); });
+  $('#airport-cap').addEventListener('input', (e) => { state.airportCap = num(e.target.value); limitChanged(); });
 
   // 出差報告
   const reportInputs = [

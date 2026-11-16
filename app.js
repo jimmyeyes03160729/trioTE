@@ -597,7 +597,8 @@ function renderPending() {
     item.className = 'pending-item';
     item.innerHTML = `
       <div class="thumb" data-img="${esc(p.imgId || '')}"></div>
-      <div><span class="lbl">日期</span><br><input type="date" value="${esc(p.date || '')}" data-k="date"></div>
+      <div><span class="lbl">日期 起</span><br><input type="date" value="${esc(p.date || '')}" data-k="date"></div>
+      <div><span class="lbl">迄（跨日才填）</span><br><input type="date" value="${esc(p.dateEnd || '')}" data-k="dateEnd" title="住宿、機票等跨日才需要填，空白 = 同一天"></div>
       <div><span class="lbl">幣別</span><br><select data-k="currency">${curOpts}</select></div>
       <div><span class="lbl">類別</span><br><select data-k="category">${catOpts}</select></div>
       <div><span class="lbl">金額(原幣)</span><br><input type="number" step="0.01" class="num" value="${p.amount}" data-k="amount"></div>
@@ -619,6 +620,11 @@ function renderPending() {
         if (p) {
           p[k] = v;
           if (k === 'currency') p.rate = getRate(v);
+          if (k === 'date' || k === 'dateEnd') {
+            fixDateOrder(p);
+            item.querySelector('[data-k="date"]').value = p.date || '';
+            item.querySelector('[data-k="dateEnd"]').value = p.dateEnd || '';
+          }
         }
         saveState();
       });
@@ -867,6 +873,11 @@ function cropRectToNatural(r) {
   return { x: Math.round(r.x * s), y: Math.round(r.y * s), w: Math.round(r.w * s), h: Math.round(r.h * s) };
 }
 
+// 迄日比起日早 → 對調；迄日跟起日同一天 → 清空（= 同一天）
+function fixDateOrder(x) {
+  if (x.date && x.dateEnd && x.dateEnd < x.date) { const t = x.date; x.date = x.dateEnd; x.dateEnd = t; }
+  if (x.dateEnd && x.dateEnd === x.date) x.dateEnd = '';
+}
 function renderCropPreviews() {
   const box = $('#crop-previews');
   // 重建 pending（保留已辨識的值，重新裁切圖片）
@@ -881,6 +892,7 @@ function renderCropPreviews() {
       amount: old[i] ? old[i].amount : '',
       currency: old[i] ? old[i].currency : 'NTD',
       date: old[i] ? old[i].date : (state.report.start || todayStr()),
+      dateEnd: old[i] ? (old[i].dateEnd || '') : '',
       category: old[i] ? old[i].category : '其他',
       ocrDone: old[i] ? !!old[i].ocrDone : false,
     };
@@ -897,7 +909,8 @@ function renderCropPreviews() {
       <div class="cp-fields">
         <input type="number" step="0.01" placeholder="金額" value="${esc(p.amount)}" data-f="amount">
         <select data-f="currency">${curOpts}</select>
-        <input type="date" value="${esc(p.date)}" data-f="date">
+        <label class="cp-date"><span>起</span><input type="date" value="${esc(p.date)}" data-f="date"></label>
+        <label class="cp-date"><span>迄</span><input type="date" value="${esc(p.dateEnd || '')}" data-f="dateEnd" title="住宿、機票等跨日才需要填，空白 = 同一天"></label>
         <select data-f="category">${catOpts}</select>
       </div>`;
     div.querySelector('[data-rm]').addEventListener('click', () => {
@@ -912,6 +925,11 @@ function renderCropPreviews() {
         if (cropPending[i]) cropPending[i][k] = v;
         if (k === 'currency' && cropPending[i]) {
           cropPending[i].currency = v;
+        }
+        if ((k === 'date' || k === 'dateEnd') && cropPending[i]) {
+          fixDateOrder(cropPending[i]);
+          const q = div.querySelectorAll('.cp-date input');
+          q[0].value = cropPending[i].date || ''; q[1].value = cropPending[i].dateEnd || '';
         }
       });
     });
@@ -1034,12 +1052,14 @@ async function runOCR(onlyNew) {
           amount: parsed.amount || whole.amount,
           currency: parsed.currency || whole.currency,
           date: parsed.date || whole.date,
+          dateEnd: parsed.dateEnd || (parsed.date ? '' : whole.dateEnd),
           category: parsed.category || whole.category,
         };
       }
       if (parsed.amount) p.amount = parsed.amount;
       if (parsed.currency) p.currency = parsed.currency;
       if (parsed.date) p.date = parsed.date;
+      if (parsed.dateEnd) p.dateEnd = parsed.dateEnd;
       if (parsed.category) p.category = parsed.category;
       p.ocrDone = true;
     }
@@ -1120,6 +1140,8 @@ function parseReceipt(text) {
   // 西元：2019/10/16、2019年10月16日、2019-10-16、2019.10.16
   // 民國：108/10/12、108年10月12日、108.10.12（108 → 2019）
   out.date = parseDateText(text);
+  const range = parseDateRange(text); // 住宿：入住～離店
+  if (range) { out.date = range.start; out.dateEnd = range.end; }
 
   // ---------- 幣別 ----------
   out.currency = detectCurrency(text);
@@ -1159,6 +1181,26 @@ function parseReceipt(text) {
   else if (/住宿|酒店|旅館|旅馆|飯店|饭店|民宿|房費|房费|訂房|订房|HOTEL|Hotel/.test(text)) out.category = '住宿';
   else if (/餐|食堂|餐廳|餐厅|便當|便当|小吃|咖啡|外賣|外卖|麦当劳|麥當勞|肯德基|飯|饭|麵|面|美食|早餐|午餐|晚餐|宵夜|膳食/.test(text)) out.category = '膳食';
   return out;
+}
+
+// 日期區間：入住/離店（Check-in/Check-out），或「10/15～10/17」「2026/10/15-2026/10/17」
+function parseDateRange(text) {
+  const D = String.raw`(\d{2,4}\s*[年\/\-.]\s*\d{1,2}\s*[月\/\-.]\s*\d{1,2}\s*日?|\d{1,2}\s*[月\/]\s*\d{1,2}\s*日?)`;
+  const pick = (re) => { const m = text.match(re); return m ? parseDateText(m[1]) : null; };
+  let start = pick(new RegExp(String.raw`(?:入住|入店|到店|抵店|抵達|抵达|Check[- ]?in|Arrival)[^\d]{0,12}` + D, 'i'));
+  let end = pick(new RegExp(String.raw`(?:[離离]店|退房|[離离]開|Check[- ]?out|Departure)[^\d]{0,12}` + D, 'i'));
+  if (!start || !end) {
+    const m = text.match(new RegExp(D + String.raw`\s*[~～〜\-－至到]\s*` + D));
+    if (m) {
+      start = parseDateText(m[1]);
+      end = parseDateText(m[2]);
+      // 「2026/10/15～10/17」後面沒寫年 → 用前面的年
+      if (start && end && !/\d{4}|年/.test(m[2])) end = start.slice(0, 4) + end.slice(4);
+    }
+  }
+  if (!start || !end || end < start) return null;
+  const days = (Date.parse(end) - Date.parse(start)) / 86400000;
+  return (days >= 1 && days <= 60) ? { start, end } : null; // 同一天或太長的不算區間
 }
 
 // 解析日期文字（支援西元/民國）
@@ -1212,6 +1254,7 @@ async function finishCrop() {
     state.pending.push({
       id: uid(),
       date: p.date || state.report.start || todayStr(),
+      dateEnd: p.dateEnd || '',
       currency: p.currency || 'NTD',
       amount: num(p.amount),
       rate: num(p.rate != null ? p.rate : getRate(p.currency || 'NTD')),

@@ -53,6 +53,7 @@ function defaultState() {
       advDate: '',     // 還款日期
     },
     customCategories: [],
+    categoryCols: {},     // 自訂類別 → 費用欄（交通/膳食/住宿/其他）
     expenses: [],
     pending: [],
   };
@@ -176,11 +177,25 @@ function catToFeeCol(cat) {
   if (BASE_CATEGORIES.includes(cat)) return cat + '費';
   return '其他費用';
 }
+// 範本主表只有 4 個費用欄：交通費 / 膳食費 / 住宿費 / 其他費用
+// 自訂類別要歸到其中一欄（新增時依名稱自動判斷，可在類別標籤上改）
+const FEE_GROUPS = [['交通', '交通費'], ['膳食', '膳食費'], ['住宿', '住宿費'], ['其他', '其他費用']];
+function guessFeeGroup(name) {
+  const n = String(name || '');
+  if (/機票|机票|航空|機場|机场|高鐵|高铁|火車|火车|鐵路|铁路|捷運|地鐵|地铁|計程|出租|交通|巴士|客運|船|租車|租车|加油|油資|停車|停车|過路|ETC|Uber|Taxi|車|车/i.test(n)) return '交通';
+  if (/住|宿|飯店|酒店|旅館|旅馆|民宿|Hotel/i.test(n)) return '住宿';
+  if (/餐|食|飲|饮|早點|咖啡|便當|茶|飯|饭|麵|面/.test(n)) return '膳食';
+  return '其他';
+}
+function feeGroupOf(cat) {
+  if (cat === '交通' || cat === '膳食' || cat === '住宿') return cat;
+  if (BASE_CATEGORIES.includes(cat)) return '其他'; // 其他、交際費
+  return (state.categoryCols && state.categoryCols[cat]) || guessFeeGroup(cat);
+}
+function isMeal(e) { return e.category !== ENT_CATEGORY && feeGroupOf(e.category) === '膳食'; }
+function isCustomCat(cat) { return !!cat && !BASE_CATEGORIES.includes(cat); }
 function catToIndex(cat) { // 對應 交通/膳食/住宿/其他 索引
-  if (cat === '交通') return 0;
-  if (cat === '膳食') return 1;
-  if (cat === '住宿') return 2;
-  return 3;
+  return ['交通', '膳食', '住宿', '其他'].indexOf(feeGroupOf(cat));
 }
 
 function blobToDataURL(blob) {
@@ -380,7 +395,7 @@ function renderExpenseRow(e) {
     <td><input type="date" value="${esc(e.date || '')}" data-k="date" title="開始日期"></td>
     <td><input type="date" value="${esc(e.dateEnd || '')}" data-k="dateEnd" title="結束日期（住宿、機票等跨日才需要填，空白=同開始日期）"></td>
     <td><select data-k="currency" title="幣別">${curOpts}</select></td>
-    <td><select data-k="category" title="類別">${catOpts}</select>${(e.category === '交通' && !e.companyBooked)
+    <td><select data-k="category" title="類別">${catOpts}</select>${isCustomCat(e.category) ? `<div class="cat-col">列入${FEE_GROUPS.find(g => g[0] === feeGroupOf(e.category))[1]}</div>` : ''}${(e.category === '交通' && !e.companyBooked)
       ? `<select data-k="airportLeg" class="airport-sel" title="住家往返機場的交通（去程、回程各有上限）"><option value="">非機場接送</option>${Object.entries(AIRPORT_LEGS).map(([k, t]) => `<option value="${k}" ${e.airportLeg === k ? 'selected' : ''}>住家↔機場 ${t}</option>`).join('')}</select>` : ''}</td>
     <td><input type="number" step="0.01" class="num" value="${e.amount}" data-k="amount" title="金額(原幣)"></td>
     <td><input type="number" step="0.0001" class="num" value="${e.rate}" data-k="rate" title="適用匯率"></td>
@@ -443,7 +458,7 @@ function refreshOverLimitMarks() {
 
 // 紅底標示：膳食整趟超過上限 → 所有膳食列；住家↔機場超限 → 該去程/回程的列
 function isOverLimit(e) {
-  if (e.category === '膳食') return mealCap().excess > 0;
+  if (isMeal(e)) return mealCap().excess > 0;
   if (e.category === '交通' && e.airportLeg) return airportCap().overLegs.includes(e.airportLeg);
   return false;
 }
@@ -646,8 +661,18 @@ function renderUploadCats() {
   const cats = allCats();
   box.innerHTML = cats.map(c => {
     const isCustom = !BASE_CATEGORIES.includes(c);
-    return `<span class="tag ${isCustom ? 'custom' : ''}">${esc(c)}</span>`;
+    if (!isCustom) return `<span class="tag">${esc(c)}</span>`;
+    const g = feeGroupOf(c);
+    const opts = FEE_GROUPS.map(([k, t]) => `<option value="${k}" ${k === g ? 'selected' : ''}>${t}</option>`).join('');
+    return `<span class="tag custom" title="匯出時列在哪一個費用欄">${esc(c)} → <select data-catcol="${esc(c)}">${opts}</select></span>`;
   }).join('');
+  box.querySelectorAll('select[data-catcol]').forEach(sel => sel.addEventListener('change', () => {
+    state.categoryCols = state.categoryCols || {};
+    state.categoryCols[sel.dataset.catcol] = sel.value;
+    saveState();
+    renderSummary(); renderExpenses();
+    toast(`「${sel.dataset.catcol}」改列在「${sel.options[sel.selectedIndex].text}」欄`);
+  }));
 }
 
 // 將「待確認」全部加入核銷明細
@@ -1382,7 +1407,7 @@ function expenseRateInfo(e) {
 // 主表的膳食：同幣別(+同消費方式、同匯率)合併成一列，明細在「膳食費憑證」分頁
 function mealSummaryRows(list) {
   const groups = {};
-  list.filter(e => e.category === '膳食').forEach(e => {
+  list.filter(isMeal).forEach(e => {
     const { used } = expenseRateInfo(e);
     const trans = e.trans || '現金';
     const k = [e.currency || 'NTD', trans, used].join('|');
@@ -1408,7 +1433,7 @@ function sortByDate(list) {
 const MEAL_USD_PER_DAY = 90;
 function mealCap() {
   const days = num(state.mealDays);
-  const meals = state.expenses.filter(e => e.category === '膳食');
+  const meals = state.expenses.filter(isMeal);
   const total = round2(meals.reduce((s, e) => s + localTotalOf(e), 0));
   const euus = state.mealRegion === 'euus';
   const usdRate = getRate('USD');
@@ -1495,7 +1520,7 @@ function rateFormula(r) {
 
 // 寫一筆明細列；回傳該列本幣（供彙總快取值）
 function writeDetailRow(ws, r, spec, e, dv) {
-  const desc = e.desc || '';
+  const desc = e.desc || (isCustomCat(e.category) ? e.category : '');
   putRow(ws, r, spec, desc.length > 12 ? 26.5 : undefined);
   const { used, custom } = expenseRateInfo(e);
   const fees = [0, 0, 0, 0];
@@ -1667,7 +1692,7 @@ function buildMainSheet(wb, codes) {
   // 公司已訂機票放最前面（同範本第一列為機票），其餘依日期
   const travelRows = [
     ...travel.filter(e => e.companyBooked),
-    ...sortByDate([...travel.filter(e => e.category !== '膳食' && !e.companyBooked), ...mealSummaryRows(travel)]),
+    ...sortByDate([...travel.filter(e => !isMeal(e) && !e.companyBooked), ...mealSummaryRows(travel)]),
   ];
   const ent = sortByDate(state.expenses.filter(e => e.category === ENT_CATEGORY));
   const deducts = deductionRows();
@@ -1770,6 +1795,9 @@ const RECEIPT_SHEETS = ['交通費憑證', '住宿費憑證', '膳食費憑證',
 const MEAL_PHOTO_SHEET = '膳食費發票';
 
 function receiptSheetFor(e) {
+  if (isCustomCat(e.category) && e.category !== ENT_CATEGORY) { // 自訂類別 → 「機票憑證」「電信憑證」…
+    return String(e.category).replace(/[\[\]:*?/\\]/g, '').slice(0, 28) + '憑證';
+  }
   if (e.category === '膳食') return '膳食費憑證';
   if (e.category === '交通') return '交通費憑證';
   if (e.category === '住宿') return '住宿費憑證';
@@ -1990,15 +2018,23 @@ async function buildPhotoSheet(wb, name, list, byDate) {
 async function buildReceiptSheets(wb) {
   const groups = {};
   state.expenses.forEach(e => { const n = receiptSheetFor(e); (groups[n] = groups[n] || []).push(e); });
+  const meals = state.expenses.filter(isMeal); // 膳食明細表含自訂的膳食類（上限一起算）
   for (const n of RECEIPT_SHEETS) {
     const list = groups[n] || [];
-    if (!list.length) continue;
     if (n === '膳食費憑證') {
-      buildMealTableSheet(wb, list);
-      await buildPhotoSheet(wb, MEAL_PHOTO_SHEET, list, true);
-    } else {
+      if (meals.length) buildMealTableSheet(wb, meals);
+      if (list.length) await buildPhotoSheet(wb, MEAL_PHOTO_SHEET, list, true);
+    } else if (list.length) {
       await buildPhotoSheet(wb, n, list, false);
     }
+  }
+  // 自訂類別：各自一個照片分頁（依新增順序）
+  const done = new Set(RECEIPT_SHEETS);
+  for (const c of state.customCategories) {
+    const n = receiptSheetFor({ category: c });
+    if (done.has(n)) continue;
+    done.add(n);
+    if ((groups[n] || []).length) await buildPhotoSheet(wb, n, groups[n], false);
   }
 }
 
@@ -2141,7 +2177,7 @@ async function openPreview() {
     const codes = buildRateSheet(wb);
     buildMainSheet(wb, codes);
     const sheets = [{ name: '出差報告暨旅費核銷明細表', ws: wb.getWorksheet(MAIN_SHEET), cols: 17 }];
-    const meals = state.expenses.filter(e => e.category === '膳食');
+    const meals = state.expenses.filter(isMeal);
     if (meals.length) { buildMealTableSheet(wb, meals); sheets.push({ name: '膳食費憑證', ws: wb.getWorksheet('膳食費憑證'), cols: 9 }); }
     sheets.push({ name: '匯率表', ws: wb.getWorksheet(RATE_SHEET), cols: 4 });
     const tabs = $('#pv-tabs');
@@ -2483,12 +2519,14 @@ function addCustomCat(name) {
   if (!name) return false;
   if (BASE_CATEGORIES.includes(name) || state.customCategories.includes(name)) { toast('類別已存在'); return false; }
   state.customCategories.push(name);
+  state.categoryCols = state.categoryCols || {};
+  state.categoryCols[name] = guessFeeGroup(name);
   saveState();
   renderCatFilter();
   renderExpenses();
   renderPending();
   renderUploadCats();
-  toast('已新增類別「' + name + '」');
+  toast(`已新增類別「${name}」，匯出時列在「${FEE_GROUPS.find(g => g[0] === state.categoryCols[name])[1]}」欄、照片放「${name}憑證」分頁（可在類別標籤上改欄位）`);
   return true;
 }
 

@@ -174,3 +174,6 @@ a.btn{text-decoration:none;display:inline-flex;align-items:center}
 .crop-previews .cp-fields{display:grid;grid-template-columns:1fr 1fr;gap:4px 6px;width:290px;margin-top:0}
 .crop-previews .cp-fields > select[data-f="category"]{grid-column:1 / -1}
 .crop-previews .cp-date input{min-width:0}
+/* 自訂類別：歸屬費用欄 */
+.upload-cats .tag select{border:none;background:transparent;color:inherit;font-size:12px;padding:0;cursor:pointer;font-family:inherit}
+.cat-col{font-size:11px;color:var(--ok);margin-top:2px;white-space:nowrap}

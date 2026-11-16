@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>trioTE 出差報銷懶人系統</title>
-<link rel="stylesheet" href="style.css?v=20261116f">
+<link rel="stylesheet" href="style.css?v=20261116h">
 </head>
 <body>
 <header class="topbar">
@@ -41,14 +41,23 @@
     <div class="card limit-card">
       <div class="card-title">報銷上限（依出國外出差管理辦法，超過的部分匯出時自動扣回）</div>
       <div class="limit-row">
+        <span class="limit-name">出差地區</span>
+        <select id="trip-region">
+          <option value="cn">大陸地區（膳食每天台幣600、住宿每晚台幣2,200）</option>
+          <option value="intl">大陸以外（膳食每天台幣600、住宿每晚USD100）</option>
+          <option value="euus">歐美地區（膳食每天USD90、住宿每晚USD175）</option>
+        </select>
+      </div>
+      <div class="limit-row">
         <span class="limit-name">膳食費</span>
         公司未提供餐食
-        <input type="number" id="meal-days" min="0" step="1" placeholder="天數"> 天 ×
-        <select id="meal-region">
-          <option value="general">每天 台幣 600</option>
-          <option value="euus">歐美地區 每天 USD 90</option>
-        </select>
+        <input type="number" id="meal-days" min="0" step="1" placeholder="天數"> 天 × 每天上限
         = 上限 <b id="meal-cap">—</b>
+      </div>
+      <div class="limit-row">
+        <span class="limit-name">住宿費</span>
+        每晚上限 <b id="lodging-cap">—</b>
+        <span class="limit-note">晚數 = 住宿明細的「起～迄」日（第一晚～最後一晚，含頭尾；只填起日 = 1 晚）</span>
       </div>
       <div class="limit-row">
         <span class="limit-name">住家↔機場交通</span>
@@ -243,7 +252,7 @@
 
 <div class="toast" id="toast"></div>
 
-<script src="template-spec.js?v=20261116f"></script>
-<script src="app.js?v=20261116f"></script>
+<script src="template-spec.js?v=20261116h"></script>
+<script src="app.js?v=20261116h"></script>
 </body>
 </html>

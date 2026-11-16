@@ -1649,7 +1649,10 @@ function suppText(T, E) {
   if (x.P > 0) expr += `-預付機票款${fmt(x.P, 0)}`;
   if (x.D > 0) expr += `-未歸還預支台幣${fmt(x.D, 0)}`;
   items.push('實付台幣請款金額:\n' + ((E > 0 || hasMinus) ? `${expr}=台幣${fmt(x.final, 0)}元。` : `台幣${fmt(x.final, 0)}元。`));
-  String(state.report.note || '').split('\n').map(t => t.trim()).filter(Boolean).forEach(t => items.push(t));
+  const note = String(state.report.note || '');
+  if (!note.includes('預設內容要刪除')) { // 範例文字沒刪掉 → 不匯出
+    note.split('\n').map(t => t.trim()).filter(Boolean).forEach(t => items.push(t));
+  }
   return items.map((t, i) => `${i + 1}.${t}`).join('\n');
 }
 // 旅費總計區「備註」欄（範本 J43 / J44）

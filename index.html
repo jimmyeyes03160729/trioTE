@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>trioTE 出差報銷懶人系統</title>
-<link rel="stylesheet" href="style.css?v=20261116e">
+<link rel="stylesheet" href="style.css?v=20261116f">
 </head>
 <body>
 <header class="topbar">
@@ -104,7 +104,7 @@
         <div class="report-field"><span class="field-label">還款日期</span><input type="date" id="f-adv-date"></div>
       </div>
       <p class="hint">匯出時會依公司範本自動組成補充說明（差旅費、交際費、預支扣款、實付請款金額）。下面可以再補充其他說明，會接在後面。</p>
-      <label class="big-field"><textarea id="f-note" rows="4" placeholder="其他補充說明（選填）"></textarea></label>
+      <label class="big-field"><textarea id="f-note" rows="7" placeholder="(預設內容要刪除)&#10;1.差旅費報銷，台幣32,413。(其中已預付來回機票款20,300)&#10;2.交際費報銷，台幣5,098。&#10;3.預支CNY5,000,8/29已還款 CNY1,222 未歸還CNY3,778*4.072(報銷匯率)=扣台幣15,384元。&#10;4.實付台幣請款金額:&#10;差旅費32,413+交際費5,098=37,511-預付機票款20,300-未歸還預支台幣15,384=台幣1,227元。"></textarea></label>
     </div>
   </section>
 
@@ -243,7 +243,7 @@
 
 <div class="toast" id="toast"></div>
 
-<script src="template-spec.js?v=20261116e"></script>
-<script src="app.js?v=20261116e"></script>
+<script src="template-spec.js?v=20261116f"></script>
+<script src="app.js?v=20261116f"></script>
 </body>
 </html>

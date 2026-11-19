@@ -937,8 +937,7 @@ function renderCropPreviews() {
     const catOpts = allCats().map(c => `<option ${c === p.category ? 'selected' : ''}>${esc(c)}</option>`).join('');
     const curOpts = state.rates.map(r => `<option ${r.code === p.currency ? 'selected' : ''}>${esc(r.code)}</option>`).join('');
     div.innerHTML = `
-      <img src="${p.dataURL}" alt="">
-      <button class="rm" data-rm="${i}" title="移除此框">✕</button>
+      <div class="cp-thumb"><img src="${p.dataURL}" alt=""><button class="rm" data-rm="${i}" title="移除此框">✕</button></div>
       <div class="cp-fields">
         <input type="number" step="0.01" placeholder="金額" value="${esc(p.amount)}" data-f="amount">
         <select data-f="currency">${curOpts}</select>

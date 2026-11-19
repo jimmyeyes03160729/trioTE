@@ -169,7 +169,9 @@ a.btn{text-decoration:none;display:inline-flex;align-items:center}
 
 /* 裁切預覽：縮圖在左、欄位在右（兩欄），不用捲動就看得到全部 */
 .crop-previews .cp{display:flex;gap:8px;align-items:flex-start;padding-right:10px}
-.crop-previews .cp .rm{top:-6px;left:68px;right:auto}
+/* ✕ 跟著縮圖右上角（窄的手機截圖也不會擋到右邊的金額欄） */
+.crop-previews .cp-thumb{position:relative;flex:0 0 auto;margin:6px 6px 0 0}
+.crop-previews .cp .rm{top:-8px;right:-8px;left:auto}
 .crop-previews .cp img{height:120px;max-width:90px}
 .crop-previews .cp-fields{display:grid;grid-template-columns:1fr 1fr;gap:4px 6px;width:290px;margin-top:0}
 .crop-previews .cp-fields > select[data-f="category"]{grid-column:1 / -1}
